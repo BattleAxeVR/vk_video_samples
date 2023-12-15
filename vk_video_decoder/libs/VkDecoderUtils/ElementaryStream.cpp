@@ -141,6 +141,9 @@ public:
     virtual int32_t GetWidth() const { return m_width; }
     virtual int32_t GetHeight() const { return m_height; }
     virtual int32_t GetBitDepth() const { return m_bitDepth; }
+    virtual float GetFrameRate() const { return 0.0f; }
+    virtual bool StreamHasEnded() const { return false; };
+    virtual bool Seek(int stream_index, int64_t timestamp, int flags) { return false; }
     virtual int64_t DemuxFrame(const uint8_t **ppVideo) {
         return -1;
     }

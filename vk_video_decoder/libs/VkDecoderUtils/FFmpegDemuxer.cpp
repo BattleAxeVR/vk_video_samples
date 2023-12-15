@@ -113,6 +113,7 @@ private:
         colorTransferCharacteristics = fmtc->streams[videoStream]->codecpar->color_trc;
         colorSpace = fmtc->streams[videoStream]->codecpar->color_space;
         chromaLocation = fmtc->streams[videoStream]->codecpar->chroma_location;
+        frame_rate = fmtc->streams[videoStream]->avg_frame_rate;
 
 #if (LIBAVCODEC_VERSION_MAJOR < 58)
         pPkt = (AVPacket *)av_malloc(sizeof(AVPacket));
@@ -429,6 +430,19 @@ public:
     virtual int GetBitDepth()  const {
         return codedLumaBitDepth;
     }
+    virtual float GetFrameRate() const { return (frame_rate.den > 0) ? frame_rate.num / (float)frame_rate.den : 0.0f; }
+    virtual bool StreamHasEnded() const { return false; }
+    virtual bool Seek(int stream_index, int64_t timestamp, int flags) {
+        if (!fmtc) {
+            return false;
+        }
+        // flags = isStreamDemuxer ? AVSEEK_FLAG_ANY : AVSEEK_FLAG_BYTE;
+        int result = av_seek_frame(fmtc, stream_index, timestamp, flags);
+        if (result < 0) {
+            return false;
+        }
+        return true;
+    }
 
     virtual bool IsStreamDemuxerEnabled() const { return isStreamDemuxer; }
     virtual bool HasFramePreparser() const { return true; }
@@ -622,6 +636,7 @@ private:
     enum AVColorTransferCharacteristic colorTransferCharacteristics;
     enum AVColorSpace                  colorSpace;
     enum AVChromaLocation              chromaLocation;
+    AVRational frame_rate = {};
 
 };
 
