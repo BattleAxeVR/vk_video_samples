@@ -220,7 +220,7 @@ public:
                                 bool createPresentQueue = false,
                                 bool createComputeQueue = false);
     VkResult InitDebugReport(bool validate = false, bool validateVerbose = false);
-private:
+//private:
 
     static PFN_vkGetInstanceProcAddr LoadVk(VulkanLibraryHandleType &vulkanLibHandle,
                                             const char * pCustomLoader = nullptr);
@@ -231,7 +231,7 @@ private:
 
     VkResult PopulateDeviceExtensions();
 
-private:
+//private:
     int32_t                 m_deviceId;
     VulkanLibraryHandleType m_libHandle;
     VkInstance m_instance;

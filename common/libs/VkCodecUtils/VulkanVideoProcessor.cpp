@@ -240,6 +240,20 @@ int32_t VulkanVideoProcessor::GetBitDepth()
     return m_videoStreamDemuxer->GetBitDepth();
 }
 
+float VulkanVideoProcessor::GetFrameRate() const
+{
+	return m_videoStreamDemuxer->GetFrameRate();
+}
+bool VulkanVideoProcessor::StreamHasEnded() const
+{
+	return m_videoStreamsCompleted;
+}
+bool VulkanVideoProcessor::Seek(int stream_index, int64_t timestamp, int flags)
+{
+	m_videoStreamsCompleted = false;
+	return m_videoStreamDemuxer ? m_videoStreamDemuxer->Seek(stream_index, timestamp, flags) : false;
+}
+
 void VulkanVideoProcessor::Deinit()
 {
 
