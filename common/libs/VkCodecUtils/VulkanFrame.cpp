@@ -33,12 +33,14 @@
 #include "VkVideoDecoder/VkVideoDecoder.h"
 
 // Vulkan call wrapper
+#ifndef CALL_VK
 #define CALL_VK(func)                                             \
     if (VK_SUCCESS != (func)) {                                   \
         std::cerr << "VulkanVideoFrame: "                        \
                    << "File " << __FILE__ << "line " << __LINE__; \
         assert(false);                                            \
     }
+#endif
 
 #ifndef ARRAYSIZE
 #define ARRAYSIZE(a) ((sizeof(a) / sizeof(a[0])))
