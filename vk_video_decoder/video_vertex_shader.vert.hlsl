@@ -1,10 +1,8 @@
 struct VSInput
 {
-[[vk::location(0)]] float2 Pos : POSITION0;
+[[vk::location(0)]] float2 position : POSITION0;
 [[vk::location(1)]] float2 UV : TEXCOORD0;
 };
-
-layout(location = 0) out vec2 vTexCoord;
 
 struct VSPushConstants
 {
@@ -18,15 +16,16 @@ VSPushConstants constants;
 struct VSOutput
 {
 	float4 position : SV_POSITION;
-	float2 vTexCoord : TEXCOORD0;
+	float2 UV : TEXCOORD0;
 };
 
 
 VSOutput main(VSInput input)
 {
 	VSOutput output = (VSOutput)0;
-    output.vTexCoord = transformPushConstants.texMatrix * input.UV;
-    output.position = vec4(input.Pos, 0, 1);
+    output.UV = input.UV;
+	//output.UV = mul(constants.texMatrix, input.UV);
+    output.position = float4(input.position, 0, 1);
 	
 	return output;
 }
