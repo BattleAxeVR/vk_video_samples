@@ -1,40 +1,32 @@
-cbuffer constants
+struct VSInput
 {
-    row_major float4x4 transformPushConstants_posMatrix : packoffset(c0);
-    row_major float2x2 transformPushConstants_texMatrix : packoffset(c4);
+[[vk::location(0)]] float2 Pos : POSITION0;
+[[vk::location(1)]] float2 UV : TEXCOORD0;
+};
+
+layout(location = 0) out vec2 vTexCoord;
+
+struct VSPushConstants
+{
+    float4x4 posMatrix;
+    float2x2 texMatrix;
+};
+
+[[vk::push_constant]]
+VSPushConstants constants;
+
+struct VSOutput
+{
+	float4 position : SV_POSITION;
+	float2 vTexCoord : TEXCOORD0;
 };
 
 
-static float4 gl_Position;
-static float2 vTexCoord;
-static float2 aTexCoord;
-static float2 aVertex;
-
-struct SPIRV_Cross_Input
+VSOutput main(VSInput input)
 {
-    float2 aVertex : POSITION;
-    float2 aTexCoord : NORMAL;
-};
-
-struct SPIRV_Cross_Output
-{
-    float2 vTexCoord : TEXCOORD0;
-    float4 gl_Position : SV_Position;
-};
-
-void vert_main()
-{
-    vTexCoord = mul(aTexCoord, transformPushConstants_texMatrix);
-    gl_Position = float4(aVertex, 0.0f, 1.0f);
-}
-
-SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
-{
-    aTexCoord = stage_input.aTexCoord;
-    aVertex = stage_input.aVertex;
-    vert_main();
-    SPIRV_Cross_Output stage_output;
-    stage_output.gl_Position = gl_Position;
-    stage_output.vTexCoord = vTexCoord;
-    return stage_output;
+	VSOutput output = (VSOutput)0;
+    output.vTexCoord = transformPushConstants.texMatrix * input.UV;
+    output.position = vec4(input.Pos, 0, 1);
+	
+	return output;
 }
