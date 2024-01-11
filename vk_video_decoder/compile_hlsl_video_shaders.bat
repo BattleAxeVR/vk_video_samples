@@ -8,4 +8,4 @@ REM WORKS
 slangc video_vertex_shader.vert.hlsl -entry main -stage vertex -o video_vertex_shader.spv
 
 REM DOESN'T WORK
-REM slangc video_pixel_shader.frag.hlsl -entry main -stage fragment -o video_pixel_shader.spv
+slangc video_pixel_shader.frag.hlsl -entry main -stage fragment -o video_pixel_shader.spv
