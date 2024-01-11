@@ -30,6 +30,7 @@
 #include <algorithm>    // std::find_if
 #include "VkCodecUtils/Helpers.h"
 #include "VkCodecUtils/VulkanDeviceContext.h"
+#include <tchar.h>
 
 #if !defined(VK_USE_PLATFORM_WIN32_KHR)
 PFN_vkGetInstanceProcAddr VulkanDeviceContext::LoadVk(VulkanLibraryHandleType &vulkanLibHandle,
@@ -80,7 +81,7 @@ PFN_vkGetInstanceProcAddr VulkanDeviceContext::LoadVk(VulkanLibraryHandleType &v
 PFN_vkGetInstanceProcAddr VulkanDeviceContext::LoadVk(VulkanLibraryHandleType &vulkanLibHandle,
                                                       const char * pCustomLoader)
 {
-    const wchar_t filename[] = L"vulkan-1.dll";
+    const TCHAR* filename = _T("vulkan-1.dll");
 
     HMODULE libModule = LoadLibrary(filename);
     if (libModule == nullptr) {
