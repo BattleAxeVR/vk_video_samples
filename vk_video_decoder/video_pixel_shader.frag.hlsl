@@ -1,8 +1,4 @@
-[[vk::binding(0, 0)]]
-Texture2D textureColor : register(t0);
-
-[[vk::binding(1, 0)]]
-SamplerState samplerColor : register(s0);
+Sampler2D tex;
 
 struct VSOutput
 {
@@ -11,6 +7,6 @@ struct VSOutput
 
 float4 main(VSOutput input) : SV_TARGET
 {
-	float4 colour = textureColor.Sample(samplerColor, input.UV);
+	float4 colour = tex.Sample(input.UV);
 	return colour;
 }
