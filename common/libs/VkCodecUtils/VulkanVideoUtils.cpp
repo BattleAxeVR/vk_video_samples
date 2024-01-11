@@ -509,16 +509,30 @@ VkResult VulkanGraphicsPipeline::CreatePipeline(const VulkanDeviceContext* vkDev
     if (verbose) printf("\nVertex shader output code:\n %s", vss);
     if (verbose) printf("\nFragment shader output code:\n %s", imageFss.str().c_str());
 
+    const bool loadSPVsFromFiles = false;
     const bool loadShadersFromFile = false;
-    if (loadShadersFromFile) {
+
+    if (loadSPVsFromFiles)
+    {
+		DestroyVertexShaderModule();
+		m_vertexShaderCache = m_vulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_vertex_shader.spv",
+			VK_SHADER_STAGE_VERTEX_BIT,
+			m_vkDevCtx);
+
+		DestroyFragmentShaderModule();
+		m_fragmentShaderCache = m_vulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_pixel_shader.spv",
+			VK_SHADER_STAGE_FRAGMENT_BIT,
+			m_vkDevCtx);
+    }
+    else if (loadShadersFromFile) {
 
         DestroyVertexShaderModule();
-        m_vertexShaderCache = m_vulkanShaderCompiler.BuildShaderFromFile("/sdcard/vulkan_video_demo/shaders/tri.vert",
+        m_vertexShaderCache = m_vulkanShaderCompiler.BuildShaderFromFile("../../../video_vertex_shader.vert",
                             VK_SHADER_STAGE_VERTEX_BIT,
                             m_vkDevCtx);
 
         DestroyFragmentShaderModule();
-        m_fragmentShaderCache = m_vulkanShaderCompiler.BuildShaderFromFile("/sdcard/vulkan_video_demo/shaders/tri.frag",
+        m_fragmentShaderCache = m_vulkanShaderCompiler.BuildShaderFromFile("../../../video_pixel_shader.frag",
                             VK_SHADER_STAGE_FRAGMENT_BIT,
                             m_vkDevCtx);
     } else {

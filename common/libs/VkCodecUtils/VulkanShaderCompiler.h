@@ -33,6 +33,10 @@ public:
     VkShaderModule BuildShaderFromFile(const char *fileName, VkShaderStageFlagBits type,
                                        const VulkanDeviceContext* vkDevCtx);
 
+    // Load SPV file compiled offline...
+	VkShaderModule LoadCompiledShaderFromFile(const char* fileName, VkShaderStageFlagBits type,
+		const VulkanDeviceContext* vkDevCtx);
+
 private:
     void* compilerHandle;
 };

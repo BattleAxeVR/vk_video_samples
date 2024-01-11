@@ -122,3 +122,38 @@ VkShaderModule VulkanShaderCompiler::BuildShaderFromFile(const char *fileName,
 
     return VK_NULL_HANDLE;
 }
+
+VkShaderModule VulkanShaderCompiler::LoadCompiledShaderFromFile(const char* fileName, VkShaderStageFlagBits type,
+	const VulkanDeviceContext* vkDevCtx)
+{
+	// read SPV file from the path
+	std::ifstream is(fileName, std::ios::binary | std::ios::in | std::ios::ate);
+
+    if(is.is_open()) {
+
+        size_t size = is.tellg();
+        is.seekg(0, std::ios::beg);
+        char* shaderCode = new char[size];
+        is.read(shaderCode, size);
+        is.close();
+
+        assert(size > 0);
+
+        VkShaderModule shaderModule = VK_NULL_HANDLE;
+
+        VkShaderModuleCreateInfo shaderModuleCreateInfo = VkShaderModuleCreateInfo();
+        shaderModuleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        shaderModuleCreateInfo.pNext = nullptr;
+        shaderModuleCreateInfo.codeSize = size;
+        shaderModuleCreateInfo.pCode = (const uint32_t*)shaderCode;
+        shaderModuleCreateInfo.flags = 0;
+        VkResult result = vkDevCtx->CreateShaderModule(*vkDevCtx, &shaderModuleCreateInfo, nullptr, &shaderModule);
+        assert(result == VK_SUCCESS);
+
+        delete[] shaderCode;
+
+        return shaderModule;
+    }
+
+	return VK_NULL_HANDLE;
+}
