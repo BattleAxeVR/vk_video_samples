@@ -509,7 +509,7 @@ VkResult VulkanGraphicsPipeline::CreatePipeline(const VulkanDeviceContext* vkDev
     if (verbose) printf("\nVertex shader output code:\n %s", vss);
     if (verbose) printf("\nFragment shader output code:\n %s", imageFss.str().c_str());
 
-    const bool loadSPVsFromFiles = false;
+    const bool loadSPVsFromFiles = true;
     const bool loadShadersFromFile = false;
 
     if (loadSPVsFromFiles)
