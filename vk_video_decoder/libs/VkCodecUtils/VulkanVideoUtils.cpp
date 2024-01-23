@@ -800,12 +800,12 @@ VkResult VulkanGraphicsPipeline::CreateGraphicsPipeline(const VulkanDeviceContex
     if (loadSPVsFromFiles)
     {
 		DestroyVertexShaderModule();
-		m_vertexShaderCache = m_vulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_vertex_shader.spv",
+        mVertexShaderCache = mVulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_vertex_shader.spv",
 			VK_SHADER_STAGE_VERTEX_BIT,
 			m_vkDevCtx);
 
 		DestroyFragmentShaderModule();
-		m_fragmentShaderCache = m_vulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_pixel_shader.spv",
+        mFragmentShaderCache = mVulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_pixel_shader.spv",
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			m_vkDevCtx);
     }
