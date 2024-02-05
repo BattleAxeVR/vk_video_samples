@@ -82,13 +82,13 @@ public:
     // called by attach_swapchain
     void PrepareViewport(const VkExtent2D& extent);
 
-private:
+//private:
     VulkanFrame(const ProgramConfig& programConfig,
                 const VulkanDeviceContext* vkDevCtx,
                 VkSharedBaseObj<VulkanVideoProcessor>& videoProcessor);
     virtual ~VulkanFrame();
 
-private:
+//private:
     std::atomic<int32_t>                  m_refCount;
     const VulkanDeviceContext*            m_vkDevCtx;
     // Decoder specific members
