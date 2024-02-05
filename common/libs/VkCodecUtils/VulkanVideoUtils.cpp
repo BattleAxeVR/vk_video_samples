@@ -515,12 +515,12 @@ VkResult VulkanGraphicsPipeline::CreatePipeline(const VulkanDeviceContext* vkDev
     if (loadSPVsFromFiles)
     {
 		DestroyVertexShaderModule();
-        mVertexShaderCache = mVulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_vertex_shader.spv",
+        m_vertexShaderCache = m_vulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_vertex_shader.spv",
 			VK_SHADER_STAGE_VERTEX_BIT,
 			m_vkDevCtx);
 
 		DestroyFragmentShaderModule();
-        mFragmentShaderCache = mVulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_pixel_shader.spv",
+        m_fragmentShaderCache = m_vulkanShaderCompiler.LoadCompiledShaderFromFile("../../../video_pixel_shader.spv",
 			VK_SHADER_STAGE_FRAGMENT_BIT,
 			m_vkDevCtx);
     }
@@ -528,12 +528,12 @@ VkResult VulkanGraphicsPipeline::CreatePipeline(const VulkanDeviceContext* vkDev
 
         DestroyVertexShaderModule();
 
-        m_vertexShaderCache = mVulkanShaderCompiler.BuildShaderFromFile("../../../video_vertex_shader.vert",
+        m_vertexShaderCache = m_vulkanShaderCompiler.BuildShaderFromFile("../../../video_vertex_shader.vert",
                             VK_SHADER_STAGE_VERTEX_BIT,
                             m_vkDevCtx);
 
         DestroyFragmentShaderModule();
-        m_fragmentShaderCache = mVulkanShaderCompiler.BuildShaderFromFile("../../../video_pixel_shader.frag",
+        m_fragmentShaderCache = m_vulkanShaderCompiler.BuildShaderFromFile("../../../video_pixel_shader.frag",
                             VK_SHADER_STAGE_FRAGMENT_BIT,
                             m_vkDevCtx);
     } else {

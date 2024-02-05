@@ -96,14 +96,14 @@ VkShaderModule VulkanShaderCompiler::BuildGlslShader(const char *shaderCode, siz
 }
 
 // Create VK shader module from given glsl shader file
-VkShaderModule VulkanShaderCompiler::BuildShaderFromFile(const char *fileName,
-                                                         VkShaderStageFlagBits type,
-                                                         const VulkanDeviceContext* vkDevCtx)
+VkShaderModule VulkanShaderCompiler::BuildShaderFromFile(const char* fileName,
+    VkShaderStageFlagBits type,
+    const VulkanDeviceContext* vkDevCtx)
 {
     // read file from the path
     std::ifstream is(fileName, std::ios::binary | std::ios::in | std::ios::ate);
 
-    if (is.is_open()) {
+    if(is.is_open()) {
 
         size_t size = is.tellg();
         is.seekg(0, std::ios::beg);
@@ -115,10 +115,13 @@ VkShaderModule VulkanShaderCompiler::BuildShaderFromFile(const char *fileName,
 
         VkShaderModule shaderModule = BuildGlslShader(shaderCode, size, type, vkDevCtx);
 
-        delete [] shaderCode;
+        delete[] shaderCode;
 
         return shaderModule;
     }
+
+    return VK_NULL_HANDLE;
+}
 
 VkShaderModule VulkanShaderCompiler::LoadCompiledShaderFromFile(const char* fileName, VkShaderStageFlagBits type,
 	const VulkanDeviceContext* vkDevCtx)
@@ -154,6 +157,3 @@ VkShaderModule VulkanShaderCompiler::LoadCompiledShaderFromFile(const char* file
 
 	return VK_NULL_HANDLE;
 } 
-
-} // namespace vulkanVideoUtils
-
