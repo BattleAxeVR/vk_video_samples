@@ -131,6 +131,9 @@ public:
     int32_t GetWidth();
     int32_t GetHeight();
     int32_t GetBitDepth();
+    float GetFrameRate() const;
+    bool StreamHasEnded() const;
+    bool Seek(int stream_index, int64_t timestamp, int flags);
 
     void Deinit();
 

@@ -58,6 +58,9 @@ public:
     virtual int32_t GetWidth()    const = 0;
     virtual int32_t GetHeight()   const = 0;
     virtual int32_t GetBitDepth() const = 0;
+    virtual float GetFrameRate() const = 0;
+    virtual bool Seek(int stream_index, int64_t timestamp, int flags) = 0;
+    virtual bool StreamHasEnded() const = 0;
 
     virtual bool IsStreamDemuxerEnabled() const = 0;
     virtual bool HasFramePreparser() const = 0;
