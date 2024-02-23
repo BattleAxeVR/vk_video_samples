@@ -113,6 +113,7 @@ private:
         colorTransferCharacteristics = fmtc->streams[videoStream]->codecpar->color_trc;
         colorSpace = fmtc->streams[videoStream]->codecpar->color_space;
         chromaLocation = fmtc->streams[videoStream]->codecpar->chroma_location;
+        frame_rate = fmtc->streams[videoStream]->codecpar->framerate;       
 
 #if (LIBAVCODEC_VERSION_MAJOR < 58)
         pPkt = (AVPacket *)av_malloc(sizeof(AVPacket));
