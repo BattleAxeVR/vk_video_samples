@@ -218,13 +218,12 @@ public:
 		(VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_EXT |
 			VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_EXT));
 
-	VkResult CreateVulkanDevice(int32_t numDecodeQueues = 1,
-		int32_t numEncodeQueues = 0,
-		bool createGraphicsQueue = false,
-		bool createPresentQueue = false,
-		bool createComputeQueue = false);
-	VkResult InitDebugReport(bool validate = false, bool validateVerbose = false);
-private:
+    VkResult CreateVulkanDevice(int32_t numDecodeQueues = 1,
+                                int32_t numEncodeQueues = 0,
+                                bool createGraphicsQueue = false,
+                                bool createPresentQueue = false,
+                                bool createComputeQueue = false);
+    VkResult InitDebugReport(bool validate = false, bool validateVerbose = false);
 
 	static PFN_vkGetInstanceProcAddr LoadVk(VulkanLibraryHandleType& vulkanLibHandle,
 		const char* pCustomLoader = nullptr);
@@ -234,52 +233,6 @@ private:
 	VkResult PopulateInstanceExtensions();
 
 	VkResult PopulateDeviceExtensions();
-
-private:
-	int32_t                 m_deviceId;
-	VulkanLibraryHandleType m_libHandle;
-	VkInstance m_instance;
-	VkPhysicalDevice m_physDevice;
-	int32_t  m_gfxQueueFamily;
-	int32_t  m_computeQueueFamily;
-	int32_t  m_presentQueueFamily;
-	int32_t  m_transferQueueFamily;
-	int32_t  m_transferNumQueues;
-	int32_t  m_videoDecodeQueueFamily;
-	int32_t  m_videoDecodeDefaultQueueIndex;
-	int32_t  m_videoDecodeNumQueues;
-	int32_t  m_videoEncodeQueueFamily;
-	int32_t  m_videoEncodeNumQueues;
-	int32_t  m_videoDecodeEncodeComputeQueueFamily;
-	int32_t  m_videoDecodeEncodeComputeNumQueues;
-	uint32_t m_videoDecodeQueueTransferSupport : 1;
-	uint32_t m_videoEncodeQueueTransferSupport : 1;
-	uint32_t m_videoDecodeQueueComputeSupport : 1;
-	uint32_t m_videoEncodeQueueComputeSupport : 1;
-	uint32_t m_videoDecodeQueryResultStatusSupport : 1;
-	uint32_t m_videoEncodeQueryResultStatusSupport : 1;
-	VkDevice                m_device;
-	VkQueue                 m_gfxQueue;
-	VkQueue                 m_computeQueue;
-	VkQueue                 m_presentQueue;
-	std::vector<VkQueue>    m_videoDecodeQueues;
-	std::vector<VkQueue>    m_videoEncodeQueues;
-	mutable std::mutex                                  m_gfxQueueMutexes;
-	mutable std::array<std::mutex, MAX_QUEUE_INSTANCES> m_videoDecodeQueueMutexes;
-	mutable std::array<std::mutex, MAX_QUEUE_INSTANCES> m_videoEncodeQueueMutexes;
-	bool m_isExternallyManagedDevice;
-	VkDebugReportCallbackEXT           m_debugReport;
-	const char* const* m_reqInstanceLayers;
-	uint32_t                           m_reqInstanceLayersSize;
-	const char* const* m_reqInstanceExtensions;
-	uint32_t                           m_reqInstanceExtensionsSize;
-	const char* const* m_requestedDeviceExtensions;
-	uint32_t                           m_requestedDeviceExtensionsSize;
-	const char* const* m_optDeviceExtensions;
-	uint32_t                           m_optDeviceExtensionsSize;
-	std::vector<const char*>          m_reqDeviceExtensions;
-	std::vector<VkExtensionProperties> m_instanceExtensions;
-	std::vector<VkExtensionProperties> m_deviceExtensions;
 };
 
 #endif /* _VULKANDEVICECONTEXT_H_ */
