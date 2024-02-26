@@ -40,8 +40,8 @@ private:
     std::atomic<int32_t> m_refCount;
 
 public:
-    int32_t m_picIdx;
-    int32_t m_displayOrder;
+    int32_t  m_picIdx;
+    uint32_t m_displayOrder;
     uint64_t m_decodeOrder;
     uint64_t m_timestamp;
     uint64_t m_presentTime;
@@ -64,7 +64,7 @@ public:
     vkPicBuffBase()
         : m_refCount(0)
         , m_picIdx(-1)
-        , m_displayOrder(-1)
+        , m_displayOrder(0)
         , m_decodeOrder(0)
         , m_timestamp(0)
         , m_presentTime(0)
