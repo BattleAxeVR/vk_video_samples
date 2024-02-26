@@ -64,7 +64,7 @@ public:
     vkPicBuffBase()
         : m_refCount(0)
         , m_picIdx(-1)
-        , m_displayOrder(-1)
+        , m_displayOrder(0)
         , m_decodeOrder(0)
         , m_timestamp(0)
         , m_presentTime(0)
