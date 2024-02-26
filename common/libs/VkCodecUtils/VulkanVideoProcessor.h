@@ -164,7 +164,7 @@ public:
     size_t OutputFrameToFile(DecodedFrame* pFrame);
     void Restart(void);
 
-//private:
+private:
 
     VulkanVideoProcessor(const VulkanDeviceContext* vkDevCtx)
         : m_refCount(0),
@@ -203,7 +203,7 @@ public:
 
     bool StreamCompleted();
 
-//private:
+private:
     std::atomic<int32_t>       m_refCount;
     const VulkanDeviceContext* m_vkDevCtx;
     VkSharedBaseObj<VideoStreamDemuxer> m_videoStreamDemuxer;
