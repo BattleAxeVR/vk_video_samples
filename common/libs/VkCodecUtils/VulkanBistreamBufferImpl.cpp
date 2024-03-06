@@ -73,15 +73,15 @@ VkDeviceSize VulkanBitstreamBufferImpl::Clone(VkDeviceSize newSize, VkDeviceSize
 }
 
 VkResult VulkanBitstreamBufferImpl::CreateBuffer(const VulkanDeviceContext* vkDevCtx,
-                                                 uint32_t queueFamilyIndex,
-                                                 VkDeviceSize& bufferSize,
-                                                 VkDeviceSize  bufferSizeAlignment,
-                                                 VkBuffer& buffer,
-                                                 VkDeviceSize& bufferOffset,
-                                                 VkMemoryPropertyFlags& memoryPropertyFlags,
-                                                 const void* pInitializeBufferMemory,
-                                                 VkDeviceSize initializeBufferMemorySize,
-                                                 VkSharedBaseObj<VulkanDeviceMemoryImpl>& vulkanDeviceMemory)
+    uint32_t queueFamilyIndex,
+    VkDeviceSize& bufferSize,
+    VkDeviceSize  bufferSizeAlignment,
+    VkBuffer& buffer,
+    VkDeviceSize& bufferOffset,
+    VkMemoryPropertyFlags& memoryPropertyFlags,
+    const void* pInitializeBufferMemory,
+    VkDeviceSize initializeBufferMemorySize,
+    VkSharedBaseObj<VulkanDeviceMemoryImpl>& vulkanDeviceMemory)
 {
     bufferSize = ((bufferSize + (bufferSizeAlignment - 1)) & ~(bufferSizeAlignment - 1));
     bufferOffset = 0;
@@ -95,6 +95,28 @@ VkResult VulkanBitstreamBufferImpl::CreateBuffer(const VulkanDeviceContext* vkDe
     createBufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     createBufferInfo.queueFamilyIndexCount = 1;
     createBufferInfo.pQueueFamilyIndices = &queueFamilyIndex;
+
+#if ADD_H265_PROFILE
+    std::vector<VkVideoProfileInfoKHR> profiles;
+
+    VkVideoDecodeH265ProfileInfoKHR h265_profile_info = { VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_PROFILE_INFO_KHR };
+    h265_profile_info.stdProfileIdc = STD_VIDEO_H265_PROFILE_IDC_MAIN_10;
+
+    VkVideoProfileInfoKHR profile = { VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR };
+    profile.videoCodecOperation = VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR;
+    profile.chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR;
+    profile.lumaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR;
+    profile.chromaBitDepth = VK_VIDEO_COMPONENT_BIT_DEPTH_10_BIT_KHR;
+    profile.pNext = &h265_profile_info;
+
+    profiles.push_back(profile);
+
+    VkVideoProfileListInfoKHR profile_info = { VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR };
+    profile_info.profileCount = (uint32_t)profiles.size();
+    profile_info.pProfiles = profiles.data();
+
+    createBufferInfo.pNext = &profile_info;
+#endif
 
     VkResult result = vkDevCtx->CreateBuffer(*vkDevCtx, &createBufferInfo, nullptr, &buffer);
     if (result != VK_SUCCESS) {
