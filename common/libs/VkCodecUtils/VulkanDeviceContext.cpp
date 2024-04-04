@@ -377,11 +377,6 @@ VkResult VulkanDeviceContext::InitPhysicalDevice(const VkQueueFlags requestQueue
         std::vector<VkQueueFamilyQueryResultStatusPropertiesKHR> queryResultStatus;
         vk::get(this, physicalDevice, queues, videoQueues, queryResultStatus);
 
-        bool videoDecodeQueueTransferSupport = false;
-        bool videoEncodeQueueTransferSupport = false;
-        bool videoDecodeQueueComputeSupport = false;
-        bool videoEncodeQueueComputeSupport = false;
-
         bool videoDecodeQueryResultStatus = false;
         bool videoEncodeQueryResultStatus = false;
         VkQueueFlags foundQueueTypes = 0;
@@ -431,20 +426,17 @@ VkResult VulkanDeviceContext::InitPhysicalDevice(const VkQueueFlags requestQueue
 
                 // Does the video decode queue also support transfer operations?
                 if (queueFamilyFlags & VK_QUEUE_TRANSFER_BIT) {
-                    videoDecodeQueueTransferSupport = true;
-
                     if (dumpQueues) std::cout << "\t\t Video decode queue " <<  i <<
                             " supports transfer operations" << std::endl;
                 }
 
                 // Does the video decode queue also support compute operations?
                 if (queueFamilyFlags & VK_QUEUE_COMPUTE_BIT) {
-                    videoDecodeQueueComputeSupport = true;
-
                     if (dumpQueues) std::cout << "\t\t Video decode queue " <<  i <<
                             " supports compute operations" << std::endl;
                 }
 
+                m_videoDecodeQueueFlags = queueFamilyFlags;
                 foundQueueTypes |= queueFamilyFlags;
                 // assert(queueFamilyFlags & VK_QUEUE_TRANSFER_BIT);
                 videoDecodeQueryResultStatus = queryResultStatus[i].queryResultStatusSupport;
@@ -462,18 +454,17 @@ VkResult VulkanDeviceContext::InitPhysicalDevice(const VkQueueFlags requestQueue
 
                 // Does the video encode queue also support transfer operations?
                 if (queueFamilyFlags & VK_QUEUE_TRANSFER_BIT) {
-                    videoEncodeQueueTransferSupport = true;
                     if (dumpQueues) std::cout << "\t\t Video encode queue " <<  i <<
                             " supports transfer operations" << std::endl;
                 }
 
                 // Does the video encode queue also support compute operations?
                 if (queueFamilyFlags & VK_QUEUE_COMPUTE_BIT) {
-                    videoEncodeQueueComputeSupport = true;
                     if (dumpQueues) std::cout << "\t\t Video encode queue " <<  i <<
                             " supports compute operations" << std::endl;
                 }
 
+                m_videoEncodeQueueFlags = queueFamilyFlags;
                 foundQueueTypes |= queueFamilyFlags;
                 // assert(queueFamilyFlags & VK_QUEUE_TRANSFER_BIT);
                 videoEncodeQueryResultStatus = queryResultStatus[i].queryResultStatusSupport;
@@ -526,11 +517,6 @@ VkResult VulkanDeviceContext::InitPhysicalDevice(const VkQueueFlags requestQueue
                 m_videoEncodeQueueFamily = videoEncodeQueueFamily;
                 m_videoEncodeNumQueues = videoEncodeQueueCount;
 
-                m_videoDecodeQueueTransferSupport = videoDecodeQueueTransferSupport;
-                m_videoEncodeQueueTransferSupport = videoEncodeQueueTransferSupport;
-                m_videoDecodeQueueComputeSupport = videoDecodeQueueComputeSupport;
-                m_videoEncodeQueueComputeSupport = videoEncodeQueueComputeSupport;
-
                 m_videoDecodeQueryResultStatusSupport = videoDecodeQueryResultStatus;
                 m_videoEncodeQueryResultStatusSupport = videoEncodeQueryResultStatus;
                 m_videoDecodeEncodeComputeQueueFamily = videoDecodeEncodeComputeQueueFamily;
@@ -581,6 +567,7 @@ VkResult VulkanDeviceContext::InitVulkanDevice(const char * pAppName, bool verbo
 
 VkResult VulkanDeviceContext::CreateVulkanDevice(int32_t numDecodeQueues,
                                                  int32_t numEncodeQueues,
+                                                 bool createTransferQueue,
                                                  bool createGraphicsQueue,
                                                  bool createPresentQueue,
                                                  bool createComputeQueue)
@@ -658,6 +645,16 @@ VkResult VulkanDeviceContext::CreateVulkanDevice(int32_t numDecodeQueues,
         devInfo.queueCreateInfoCount++;
     }
 
+    if (createTransferQueue &&
+            (m_transferQueueFamily != -1) &&
+            uniqueQueueFamilies.insert(m_transferQueueFamily).second) {
+        queueInfo[devInfo.queueCreateInfoCount].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueInfo[devInfo.queueCreateInfoCount].queueFamilyIndex = m_transferQueueFamily;
+        queueInfo[devInfo.queueCreateInfoCount].queueCount = 1;
+        queueInfo[devInfo.queueCreateInfoCount].pQueuePriorities = queuePriorities.data();
+        devInfo.queueCreateInfoCount++;
+    }
+
     assert(devInfo.queueCreateInfoCount <= MAX_QUEUE_FAMILIES);
 
     devInfo.pQueueCreateInfos = queueInfo.data();
@@ -684,6 +681,9 @@ VkResult VulkanDeviceContext::CreateVulkanDevice(int32_t numDecodeQueues,
     }
     if (createPresentQueue) {
         GetDeviceQueue(m_device, GetPresentQueueFamilyIdx(), 0, &m_presentQueue);
+    }
+    if (createTransferQueue) {
+        GetDeviceQueue(m_device, GetTransferQueueFamilyIdx(), 0, &m_trasferQueue);
     }
     if (numDecodeQueues) {
         assert(GetVideoDecodeQueueFamilyIdx() != -1);
@@ -729,10 +729,8 @@ VulkanDeviceContext::VulkanDeviceContext(int32_t deviceId,
     , m_videoEncodeNumQueues(0)
     , m_videoDecodeEncodeComputeQueueFamily(-1)
     , m_videoDecodeEncodeComputeNumQueues(0)
-    , m_videoDecodeQueueTransferSupport(false)
-    , m_videoEncodeQueueTransferSupport(false)
-    , m_videoDecodeQueueComputeSupport(false)
-    , m_videoEncodeQueueComputeSupport(false)
+    , m_videoDecodeQueueFlags(0)
+    , m_videoEncodeQueueFlags(0)
     , m_videoDecodeQueryResultStatusSupport(false)
     , m_videoEncodeQueryResultStatusSupport(false)
     , m_device()

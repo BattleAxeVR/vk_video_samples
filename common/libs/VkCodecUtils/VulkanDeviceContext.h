@@ -74,6 +74,8 @@ public:
     VkQueue GetComputeQueue() const { return m_computeQueue; }
     int32_t GetPresentQueueFamilyIdx() const { return m_presentQueueFamily; }
     VkQueue GetPresentQueue() const { return m_presentQueue; }
+    int32_t GetTransferQueueFamilyIdx() const { return m_transferQueueFamily; }
+    VkQueue GetTransferQueue() const { return m_trasferQueue; }
     int32_t GetVideoDecodeQueueFamilyIdx() const { return m_videoDecodeQueueFamily; }
     int32_t GetVideoDecodeDefaultQueueIndex() const { return m_videoDecodeDefaultQueueIndex; }
     int32_t GetVideoDecodeNumQueues() const { return m_videoDecodeNumQueues; }
@@ -93,6 +95,8 @@ public:
     }
     bool    GetVideoDecodeQueryResultStatusSupport() const { return m_videoDecodeQueryResultStatusSupport; }
     bool    GetVideoEncodeQueryResultStatusSupport() const { return m_videoEncodeQueryResultStatusSupport; }
+    VkQueueFlags GetVideoDecodeQueueFlag() const { return m_videoDecodeQueueFlags; }
+    VkQueueFlags GetVideoEncodeQueueFlag() const { return m_videoEncodeQueueFlags; }
     class MtQueueMutex {
 
     public:
@@ -241,6 +245,7 @@ public:
 
     VkResult CreateVulkanDevice(int32_t numDecodeQueues = 1,
                                 int32_t numEncodeQueues = 0,
+                                bool createTransferQueue = false,
                                 bool createGraphicsQueue = false,
                                 bool createPresentQueue = false,
                                 bool createComputeQueue = false);
@@ -273,10 +278,8 @@ public:
     int32_t  m_videoEncodeNumQueues;
     int32_t  m_videoDecodeEncodeComputeQueueFamily;
     int32_t  m_videoDecodeEncodeComputeNumQueues;
-    uint32_t m_videoDecodeQueueTransferSupport : 1;
-    uint32_t m_videoEncodeQueueTransferSupport : 1;
-    uint32_t m_videoDecodeQueueComputeSupport : 1;
-    uint32_t m_videoEncodeQueueComputeSupport : 1;
+    VkQueueFlags m_videoDecodeQueueFlags;
+    VkQueueFlags m_videoEncodeQueueFlags;
     uint32_t m_videoDecodeQueryResultStatusSupport : 1;
     uint32_t m_videoEncodeQueryResultStatusSupport : 1;
     VkDevice                m_device;

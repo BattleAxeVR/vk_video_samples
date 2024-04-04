@@ -160,8 +160,9 @@ VkResult VkVideoEncoder::SubmitStagedInputFrame(VkSharedBaseObj<VkVideoEncodeFra
     submitInfo.signalSemaphoreCount = (frameCompleteSemaphore != VK_NULL_HANDLE) ? 1 : 0;
 
     VkFence queueCompleteFence = encodeFrameInfo->inputCmdBuffer->GetFence();
-    VkResult result = m_vkDevCtx->MultiThreadedQueueSubmit(VulkanDeviceContext::ENCODE, 0,
-                                                           1, &submitInfo,
+    VkResult result = m_vkDevCtx->MultiThreadedQueueSubmit(((m_vkDevCtx->GetVideoEncodeQueueFlag() & VK_QUEUE_TRANSFER_BIT) != 0) ?
+                                                               VulkanDeviceContext::ENCODE : VulkanDeviceContext::TRANSFER,
+                                                           0, 1, &submitInfo,
                                                            queueCompleteFence);
 
     encodeFrameInfo->inputCmdBuffer->SetCommandBufferSubmitted();
@@ -482,7 +483,9 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
 
     result = m_inputCommandBufferPool->Configure( m_vkDevCtx,
                                                   encoderConfig->numInputImages, // numPoolNodes
-                                                  m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(), // queueFamilyIndex
+                                                  ((m_vkDevCtx->GetVideoEncodeQueueFlag() & VK_QUEUE_TRANSFER_BIT) != 0) ?
+                                                      m_vkDevCtx->GetVideoEncodeQueueFamilyIdx() :
+                                                      m_vkDevCtx->GetTransferQueueFamilyIdx(), // queueFamilyIndex
                                                   false,    // createQueryPool - not needed for the input transfer
                                                   nullptr,  // pVideoProfile   - not needed for the input transfer
                                                   true,     // createSemaphores
@@ -797,15 +800,6 @@ VkResult VkVideoEncoder::RecordVideoCodingCmd(VkSharedBaseObj<VkVideoEncodeFrame
     encodeBeginInfo.pReferenceSlots = encodeFrameInfo->referenceSlotsInfo;
 
     const VulkanDeviceContext* vkDevCtx = encodeCmdBuffer->GetDeviceContext();
-    vkDevCtx->CmdBeginVideoCodingKHR(cmdBuf, &encodeBeginInfo);
-
-    if (encodeFrameInfo->controlCmd != VkVideoCodingControlFlagsKHR()) {
-
-        VkVideoCodingControlInfoKHR renderControlInfo = { VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
-                                                          encodeFrameInfo->pControlCmdChain,
-                                                          encodeFrameInfo->controlCmd};
-        vkDevCtx->CmdControlVideoCodingKHR(cmdBuf, &renderControlInfo);
-    }
 
     // Handle the query indexes
     uint32_t querySlotId = (uint32_t)-1;
@@ -819,6 +813,16 @@ VkResult VkVideoEncoder::RecordVideoCodingCmd(VkSharedBaseObj<VkVideoEncodeFrame
     // Clear the query results
     const uint32_t numQuerySamples = 1;
     vkDevCtx->CmdResetQueryPool(cmdBuf, queryPool, querySlotId, numQuerySamples);
+
+    vkDevCtx->CmdBeginVideoCodingKHR(cmdBuf, &encodeBeginInfo);
+
+    if (encodeFrameInfo->controlCmd != VkVideoCodingControlFlagsKHR()) {
+
+        VkVideoCodingControlInfoKHR renderControlInfo = { VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
+                                                          encodeFrameInfo->pControlCmdChain,
+                                                          encodeFrameInfo->controlCmd};
+        vkDevCtx->CmdControlVideoCodingKHR(cmdBuf, &renderControlInfo);
+    }
 
     vkDevCtx->CmdBeginQuery(cmdBuf, queryPool, querySlotId, VkQueryControlFlags());
 
