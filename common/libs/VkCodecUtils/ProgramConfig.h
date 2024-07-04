@@ -50,7 +50,7 @@ struct ProgramConfig {
         numDecodeImagesInFlight = 8;
         numDecodeImagesToPreallocate = -1; // pre-allocate the maximum num of images
         numBitstreamBuffersToPreallocate = 8;
-        backBufferCount = 8;
+        backBufferCount = 3;
         ticksPerSecond = 30;
         vsync = true;
 
@@ -66,7 +66,7 @@ struct ProgramConfig {
         queueId = 0;
         gpuIndex = -1;
         forceParserType = VK_VIDEO_CODEC_OPERATION_NONE_KHR;
-        decoderQueueSize = 10;
+        decoderQueueSize = 5;
         enablePostProcessFilter = -1,
         enableStreamDemuxing = true;
         deviceId = (uint32_t)-1;
@@ -196,15 +196,27 @@ struct ProgramConfig {
                 }},
             {"--queueSize", nullptr, 1,
                 "Size of decode operation in-flight before synchronizing for the "
-                "result",
+                "result - only used with --noDisplay (when no presentation is enabled)",
                 [this](const char **args, const ProgramArgs &a) {
                     decoderQueueSize = std::atoi(args[0]);
                     return true;
                 }},
-            {"--computeShader", nullptr, 0, "Enables post processing by running "
+            {"--decodeImagesInFlight", nullptr, 1,
+                "The number of decode images that are in-flight in addition to the DPB required",
+                [this](const char **args, const ProgramArgs &a) {
+                    numDecodeImagesInFlight = std::atoi(args[0]);
+                    return true;
+                }},
+            {"--displayBackBufferSize", nullptr, 1,
+                "Size of display back-buffers swapchain queue size",
+                [this](const char **args, const ProgramArgs &a) {
+                    backBufferCount = std::atoi(args[0]);
+                    return true;
+                }},
+            {"--enablePostProcessFilter", nullptr, 1, "Enables post processing by running "
                 "a compute shader on the decode output",
                 [this](const char **args, const ProgramArgs &a) {
-                    enablePostProcessFilter = true;
+                    enablePostProcessFilter = std::atoi(args[0]);
                     return true;
                 }},
             {"--loop", nullptr, 1,
