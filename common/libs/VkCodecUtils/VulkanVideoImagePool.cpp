@@ -26,7 +26,6 @@
 #include <string>
 
 #include "vulkan_interfaces.h"
-#include "vkvideo_parser/PictureBufferBase.h"
 #include "VkCodecUtils/HelpersDispatchTable.h"
 #include "VkCodecUtils/VulkanDeviceContext.h"
 #include "VkVideoCore/VkVideoCoreProfile.h"
@@ -158,6 +157,9 @@ VkResult VulkanVideoImagePool::GetImageSetNewLayout(uint32_t imageIndex,
 
     bool validImage = m_imageResources[imageIndex].SetNewLayout(newImageLayout);
     assert(validImage);
+    if (!validImage) {
+	return VK_ERROR_INITIALIZATION_FAILED;
+    }
 
     return result;
 }
