@@ -70,7 +70,7 @@ struct EncoderInputImageParameters
 public:
     uint32_t width;
     uint32_t height;
-    uint32_t bpp;
+    uint8_t  bpp;
     VkVideoChromaSubsamplingFlagBitsKHR chromaSubsampling;
     uint32_t numPlanes;
     VkSubresourceLayout planeLayouts[3];
@@ -525,6 +525,10 @@ public:
     static VkResult CreateCodecConfig(int argc, char *argv[], VkSharedBaseObj<EncoderConfig>& encoderConfig);
 
     void InitVideoProfile();
+
+    int ParseArguments(int argc, char *argv[]);
+
+    virtual int DoParseArguments(int argc, char *argv[]) { return 0; };
 
     virtual VkResult InitializeParameters()
     {
