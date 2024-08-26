@@ -68,6 +68,7 @@ VkResult VkVideoEncoderH264::InitEncoderCodec(VkSharedBaseObj<EncoderConfig>& en
                                                           &m_h264.m_ppsInfo);
 
     VkVideoSessionParametersCreateInfoKHR* encodeSessionParametersCreateInfo = videoSessionParametersInfo.getVideoSessionParametersInfo();
+    encodeSessionParametersCreateInfo->flags = 0;
     VkVideoSessionParametersKHR sessionParameters;
     result = m_vkDevCtx->CreateVideoSessionParametersKHR(*m_vkDevCtx,
                                                          encodeSessionParametersCreateInfo,
@@ -298,6 +299,9 @@ VkResult VkVideoEncoderH264::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
     assert(refLists.refPicListCount[0] <= 8);
     assert(refLists.refPicListCount[1] <= 8);
 
+    memset(pFrameInfo->stdReferenceListsInfo.RefPicList0, STD_VIDEO_H264_NO_REFERENCE_PICTURE, sizeof(pFrameInfo->stdReferenceListsInfo.RefPicList0));
+    memset(pFrameInfo->stdReferenceListsInfo.RefPicList1, STD_VIDEO_H264_NO_REFERENCE_PICTURE, sizeof(pFrameInfo->stdReferenceListsInfo.RefPicList1));
+
     memcpy(pFrameInfo->stdReferenceListsInfo.RefPicList0, refLists.refPicList[0], refLists.refPicListCount[0]);
     memcpy(pFrameInfo->stdReferenceListsInfo.RefPicList1, refLists.refPicList[1], refLists.refPicListCount[1]);
 
@@ -322,6 +326,9 @@ VkResult VkVideoEncoderH264::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
     int8_t targetDpbSlot = m_dpb264->DpbPictureEnd(&pictureInfo, encodeFrameInfo->setupImageResource,
                                                    &m_h264.m_spsInfo, &pFrameInfo->stdSliceHeader,
                                                    &pFrameInfo->stdReferenceListsInfo, MAX_MEM_MGMNT_CTRL_OPS_COMMANDS);
+    if (targetDpbSlot >= VkEncDpbH264::MAX_DPB_SLOTS) {
+        targetDpbSlot = (encodeFrameInfo->setupImageResource!=nullptr) + refLists.refPicListCount[0] + refLists.refPicListCount[1] + 1;
+    }
     if (isReference) {
         assert(targetDpbSlot >= 0);
     }
@@ -335,9 +342,9 @@ VkResult VkVideoEncoderH264::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
     if (encodeFrameInfo->setupImageResource != nullptr) {
 
         assert(setupImageViewPictureResource);
-        pFrameInfo->referenceSlotsInfo[numReferenceSlots].sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR;
-        pFrameInfo->referenceSlotsInfo[numReferenceSlots].slotIndex = targetDpbSlot;
-        pFrameInfo->referenceSlotsInfo[numReferenceSlots].pPictureResource = setupImageViewPictureResource;
+        pFrameInfo->referenceSlotsInfo[numReferenceSlots] = { VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR,
+                                                              pFrameInfo->stdDpbSlotInfo, targetDpbSlot, setupImageViewPictureResource };
+
         pFrameInfo->setupReferenceSlotInfo = pFrameInfo->referenceSlotsInfo[numReferenceSlots];
         pFrameInfo->encodeInfo.pSetupReferenceSlot = &pFrameInfo->setupReferenceSlotInfo;
 
@@ -385,11 +392,14 @@ VkResult VkVideoEncoderH264::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
         pFrameInfo->numDpbImageResources = numReferenceSlots;
     }
 
+    pFrameInfo->encodeInfo.srcPictureResource.sType = VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR;
+    pFrameInfo->encodeInfo.flags = 0;
     // If the current picture is going to be a reference frame, the first
     // entry in the refSlots array contains information about the picture
     // resource associated with this frame. This entry should not be
     // provided in the list of reference resources for the current picture,
     // so skip refSlots[0].
+    pFrameInfo->encodeInfo.srcPictureResource.sType = VK_STRUCTURE_TYPE_VIDEO_PICTURE_RESOURCE_INFO_KHR;
     pFrameInfo->encodeInfo.referenceSlotCount = numReferenceSlots - 1;
     pFrameInfo->encodeInfo.pReferenceSlots = pFrameInfo->referenceSlotsInfo + 1;
 
@@ -399,6 +409,10 @@ VkResult VkVideoEncoderH264::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
     } else {
         m_dpb264->SetCurRefFrameTimeStamp(0);
     }
+
+    // since encodeInfo.pReferenceSlots points to the address of the next element (+1), it's safe to set it one to -1
+    // this is needed to explicity mark the unused element in BeginInfo for vkCmdBeginVideoCodingKHR() as inactive
+    pFrameInfo->referenceSlotsInfo[0].slotIndex = -1;
 
     assert(m_dpb264->GetNumRefFramesInDPB(0) <= m_h264.m_spsInfo.max_num_ref_frames);
 

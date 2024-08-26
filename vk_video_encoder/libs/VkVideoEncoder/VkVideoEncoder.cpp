@@ -135,6 +135,11 @@ VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
     VkSharedBaseObj<VkImageResourceView> srcEncodeImageView;
     encodeFrameInfo->srcEncodeImageResource->GetImageView(srcEncodeImageView);
 
+    VkImageLayout linearImgNewLayout = TransitionImageLayout(cmdBuf, linearInputImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkImageLayout srcImgNewLayout = TransitionImageLayout(cmdBuf, srcEncodeImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    (void)linearImgNewLayout;
+    (void)srcImgNewLayout;
+
     CopyLinearToOptimalImage(cmdBuf, linearInputImageView, srcEncodeImageView);
 
     VkResult result = encodeFrameInfo->inputCmdBuffer->EndCommandBufferRecording(cmdBuf);
@@ -167,6 +172,7 @@ VkResult VkVideoEncoder::SubmitStagedInputFrame(VkSharedBaseObj<VkVideoEncodeFra
     submitInfo.signalSemaphoreCount = (frameCompleteSemaphore != VK_NULL_HANDLE) ? 1 : 0;
 
     VkFence queueCompleteFence = encodeFrameInfo->inputCmdBuffer->GetFence();
+    assert(VK_NOT_READY == m_vkDevCtx->GetFenceStatus(*m_vkDevCtx, queueCompleteFence));
     VkResult result = m_vkDevCtx->MultiThreadedQueueSubmit(((m_vkDevCtx->GetVideoEncodeQueueFlag() & VK_QUEUE_TRANSFER_BIT) != 0) ?
                                                                VulkanDeviceContext::ENCODE : VulkanDeviceContext::TRANSFER,
                                                            0, 1, &submitInfo,
@@ -345,7 +351,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
 
     m_maxCodedExtent = { encoderConfig->input.width, encoderConfig->input.height }; // codedSize
 
-    const uint32_t maxReferencePicturesSlotsCount = EncoderConfig::DEFAULT_MAX_NUM_REF_FRAMES;
+    const uint32_t maxReferencePicturesSlotsCount = encoderConfig->videoCapabilities.maxActiveReferencePictures;
 
     VkVideoSessionCreateFlagsKHR sessionCreateFlags{};
 #ifdef VK_KHR_video_maintenance1
@@ -485,6 +491,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
 
             result = VulkanBitstreamBufferImpl::Create(m_vkDevCtx,
                     m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(),
+                    VK_BUFFER_USAGE_VIDEO_ENCODE_DST_BIT_KHR,
                     allocSize,
                     encoderConfig->videoCapabilities.minBitstreamBufferOffsetAlignment,
                     encoderConfig->videoCapabilities.minBitstreamBufferSizeAlignment,
@@ -582,6 +589,7 @@ VkDeviceSize VkVideoEncoder::GetBitstreamBuffer(VkSharedBaseObj<VulkanBitstreamB
     if (!(availablePoolNode >= 0)) {
         VkResult result = VulkanBitstreamBufferImpl::Create(m_vkDevCtx,
                 m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(),
+                VK_BUFFER_USAGE_VIDEO_ENCODE_DST_BIT_KHR,
                 newSize,
                 m_encoderConfig->videoCapabilities.minBitstreamBufferOffsetAlignment,
                 m_encoderConfig->videoCapabilities.minBitstreamBufferSizeAlignment,
@@ -634,7 +642,7 @@ VkImageLayout VkVideoEncoder::TransitionImageLayout(VkCommandBuffer cmdBuf,
                                                     VkImageLayout oldLayout, VkImageLayout newLayout)
 {
     uint32_t baseArrayLayer = 0;
-    const VkImageMemoryBarrier2KHR imageBarrier = {
+    VkImageMemoryBarrier2KHR imageBarrier = {
 
             VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR, // VkStructureType sType
             nullptr, // const void*     pNext
@@ -645,7 +653,7 @@ VkImageLayout VkVideoEncoder::TransitionImageLayout(VkCommandBuffer cmdBuf,
             oldLayout, // VkImageLayout   oldLayout // FIXME - use the real old layout
             newLayout, // VkImageLayout   newLayout
             VK_QUEUE_FAMILY_IGNORED, // uint32_t        srcQueueFamilyIndex
-            (uint32_t)m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(), // uint32_t   dstQueueFamilyIndex
+            VK_QUEUE_FAMILY_IGNORED, // uint32_t   dstQueueFamilyIndex
             imageView->GetImageResource()->GetImage(), // VkImage         image;
             {
                 // VkImageSubresourceRange   subresourceRange
@@ -656,6 +664,25 @@ VkImageLayout VkVideoEncoder::TransitionImageLayout(VkCommandBuffer cmdBuf,
                 1, // uint32_t           layerCount;
             },
     };
+
+    if ((oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) && (newLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)) {
+        imageBarrier.srcAccessMask = 0;
+        imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if ((oldLayout == VK_IMAGE_LAYOUT_UNDEFINED) && (newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
+        imageBarrier.srcAccessMask = 0;
+        imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if ((oldLayout == VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR) && (newLayout == VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR)) {
+        imageBarrier.srcAccessMask = VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR;
+        imageBarrier.dstAccessMask = VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR;
+        imageBarrier.srcStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR;
+        imageBarrier.dstStageMask = VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR;
+    } else {
+        throw std::invalid_argument("unsupported layout transition!");
+    }
 
     const VkDependencyInfoKHR dependencyInfo = {
         VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR,
@@ -732,8 +759,8 @@ VkResult VkVideoEncoder::CopyLinearToOptimalImage(VkCommandBuffer& commandBuffer
     {
         VkMemoryBarrier memoryBarrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER};
         memoryBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        memoryBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-        m_vkDevCtx->CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+        memoryBarrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+        m_vkDevCtx->CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
                                1, &memoryBarrier, 0,
                                 0, 0, 0);
     }
@@ -765,7 +792,11 @@ VkResult VkVideoEncoder::HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
         encodeFrameInfo->qualityLevelInfo.sType  = VK_STRUCTURE_TYPE_VIDEO_ENCODE_QUALITY_LEVEL_INFO_KHR;
         encodeFrameInfo->qualityLevelInfo.qualityLevel = encodeFrameInfo->qualityLevel;
         if (pNext != nullptr) {
-            encodeFrameInfo->rateControlInfo.pNext = pNext;
+            if (encodeFrameInfo->rateControlInfo.pNext == nullptr) {
+                encodeFrameInfo->rateControlInfo.pNext = pNext;
+            } else {
+                ((VkBaseInStructure*)(encodeFrameInfo->rateControlInfo.pNext))->pNext = pNext;
+            }
         }
         pNext = (VkBaseInStructure*)&encodeFrameInfo->qualityLevelInfo;
     }
@@ -786,9 +817,14 @@ VkResult VkVideoEncoder::HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
 
         encodeFrameInfo->rateControlInfo.pLayers = encodeFrameInfo->rateControlLayersInfo;
         encodeFrameInfo->rateControlInfo.layerCount = 1;
+        m_beginRateControlInfo = encodeFrameInfo->rateControlInfo;
 
         if (pNext != nullptr) {
-            encodeFrameInfo->rateControlInfo.pNext = pNext;
+            if (encodeFrameInfo->rateControlInfo.pNext == nullptr) {
+                encodeFrameInfo->rateControlInfo.pNext = pNext;
+            } else {
+                ((VkBaseInStructure*)(encodeFrameInfo->rateControlInfo.pNext))->pNext = pNext;
+            }
         }
         pNext = (VkBaseInStructure*)&encodeFrameInfo->rateControlInfo;
     }
@@ -807,6 +843,9 @@ VkResult VkVideoEncoder::RecordVideoCodingCmd(VkSharedBaseObj<VkVideoEncodeFrame
     if (!success) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }
+    // Reset the command buffer and sync
+    encodeFrameInfo->encodeCmdBuffer->ResetCommandBuffer();
+
     VkSharedBaseObj<VulkanCommandBufferPool::PoolNode>& encodeCmdBuffer = encodeFrameInfo->encodeCmdBuffer;
 
     assert(encodeFrameInfo != nullptr);
@@ -844,6 +883,13 @@ VkResult VkVideoEncoder::RecordVideoCodingCmd(VkSharedBaseObj<VkVideoEncodeFrame
     const uint32_t numQuerySamples = 1;
     vkDevCtx->CmdResetQueryPool(cmdBuf, queryPool, querySlotId, numQuerySamples);
 
+    if (encodeFrameInfo->controlCmd != VkVideoCodingControlFlagsKHR())
+    {
+        m_beginRateControlInfo = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR, NULL};
+    }
+
+    encodeBeginInfo.pNext = &m_beginRateControlInfo;
+
     vkDevCtx->CmdBeginVideoCodingKHR(cmdBuf, &encodeBeginInfo);
 
     if (encodeFrameInfo->controlCmd != VkVideoCodingControlFlagsKHR()) {
@@ -852,13 +898,38 @@ VkResult VkVideoEncoder::RecordVideoCodingCmd(VkSharedBaseObj<VkVideoEncodeFrame
                                                           encodeFrameInfo->pControlCmdChain,
                                                           encodeFrameInfo->controlCmd};
         vkDevCtx->CmdControlVideoCodingKHR(cmdBuf, &renderControlInfo);
+
+        m_beginRateControlInfo = *(VkVideoEncodeRateControlInfoKHR*)encodeFrameInfo->pControlCmdChain;
+        ((VkBaseInStructure*)(m_beginRateControlInfo.pNext))->pNext = NULL;
     }
 
-    vkDevCtx->CmdBeginQuery(cmdBuf, queryPool, querySlotId, VkQueryControlFlags());
+    if (m_videoMaintenance1FeaturesSupported)
+    {
+        VkVideoInlineQueryInfoKHR videoInlineQueryInfoKHR;
+        videoInlineQueryInfoKHR.pNext = NULL;
+        videoInlineQueryInfoKHR.sType = VK_STRUCTURE_TYPE_VIDEO_INLINE_QUERY_INFO_KHR;
+        videoInlineQueryInfoKHR.queryPool = queryPool;
+        videoInlineQueryInfoKHR.firstQuery = querySlotId;
+        videoInlineQueryInfoKHR.queryCount = numQuerySamples;
+        ((VkVideoEncodeH264PictureInfoKHR*)(encodeFrameInfo->encodeInfo.pNext))->pNext = &videoInlineQueryInfoKHR;
 
-    vkDevCtx->CmdEncodeVideoKHR(cmdBuf, &encodeFrameInfo->encodeInfo);
+        vkDevCtx->CmdEncodeVideoKHR(cmdBuf, &encodeFrameInfo->encodeInfo);
+    }
+    else
+    {
+        vkDevCtx->CmdBeginQuery(cmdBuf, queryPool, querySlotId, VkQueryControlFlags());
 
-    vkDevCtx->CmdEndQuery(cmdBuf, queryPool, querySlotId);
+        vkDevCtx->CmdEncodeVideoKHR(cmdBuf, &encodeFrameInfo->encodeInfo);
+
+        vkDevCtx->CmdEndQuery(cmdBuf, queryPool, querySlotId);
+    }
+
+    if (encodeFrameInfo->setupImageResource) {
+        VkSharedBaseObj<VkImageResourceView> setupEncodeImageView;
+        encodeFrameInfo->setupImageResource->GetImageView(setupEncodeImageView);
+
+        TransitionImageLayout(cmdBuf, setupEncodeImageView, VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR, VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR);
+    }
 
     VkVideoEndCodingInfoKHR encodeEndInfo { VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR };
     vkDevCtx->CmdEndVideoCodingKHR(cmdBuf, &encodeEndInfo);
@@ -897,7 +968,8 @@ VkResult VkVideoEncoder::SubmitVideoCodingCmds(VkSharedBaseObj<VkVideoEncodeFram
     }
 
     const VkCommandBuffer* pCmdBuf = encodeFrameInfo->encodeCmdBuffer->GetCommandBuffer();
-    VkSemaphore frameCompleteSemaphore = encodeFrameInfo->encodeCmdBuffer->GetSemaphore();
+    // The encode operation complete semaphore is not needed at this point.
+    VkSemaphore frameCompleteSemaphore = VK_NULL_HANDLE; // encodeFrameInfo->encodeCmdBuffer->GetSemaphore();
 
     VkSubmitInfo submitInfo = { VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr };
     const VkPipelineStageFlags videoEncodeSubmitWaitStages = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -910,6 +982,7 @@ VkResult VkVideoEncoder::SubmitVideoCodingCmds(VkSharedBaseObj<VkVideoEncodeFram
     submitInfo.signalSemaphoreCount = (frameCompleteSemaphore != VK_NULL_HANDLE) ? 1 : 0;
 
     VkFence queueCompleteFence = encodeFrameInfo->encodeCmdBuffer->GetFence();
+    assert(VK_NOT_READY == m_vkDevCtx->GetFenceStatus(*m_vkDevCtx, queueCompleteFence));
     VkResult result = m_vkDevCtx->MultiThreadedQueueSubmit(VulkanDeviceContext::ENCODE, 0,
                                                            1, &submitInfo,
                                                            queueCompleteFence);
