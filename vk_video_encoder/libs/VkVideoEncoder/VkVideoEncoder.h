@@ -472,8 +472,8 @@ public:
     VkResult SubmitVideoCodingCmds(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
                                    uint32_t frameIdx, uint32_t ofTotalFrames);
 
-    VkResult AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
-                                   uint32_t frameIdx, uint32_t ofTotalFrames);
+    virtual VkResult AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
+                                           uint32_t frameIdx, uint32_t ofTotalFrames);
 
     VkResult PrintVideoCodingLink(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo, uint32_t frameIdx, uint32_t ofTotalFrames)
     {
@@ -622,7 +622,7 @@ protected:
 #ifdef ENCODER_DISPLAY_QUEUE_SUPPORT
     DisplayQueue                             m_displayQueue;
 #endif // ENCODER_DISPLAY_QUEUE_SUPPORT
-    EncoderFrameQueue                        m_encoderQueue;
+    EncoderFrameQueue                        m_encoderThreadQueue;
     std::thread                              m_encoderQueueConsumerThread;
     VkSharedBaseObj<VkVideoEncodeFrameInfo>  m_lastDeferredFrame;
 };

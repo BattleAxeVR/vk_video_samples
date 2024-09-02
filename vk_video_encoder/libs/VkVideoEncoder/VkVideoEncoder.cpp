@@ -86,7 +86,7 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
                 (int)m_encoderConfig->input.planeLayouts[0].rowPitch,                 // src_stride_y,
                 pInputFrameData + m_encoderConfig->input.planeLayouts[1].offset,      // src_u,
                 (int)m_encoderConfig->input.planeLayouts[1].rowPitch,                 // src_stride_u,
-                pInputFrameData + m_encoderConfig->input.planeLayouts[2].offset, // src_v,
+                pInputFrameData + m_encoderConfig->input.planeLayouts[2].offset,      // src_v,
                 (int)m_encoderConfig->input.planeLayouts[2].rowPitch,                 // src_stride_v,
                 writeImagePtr + dstSubresourceLayout[0].offset,                       // dst_y,
                 (int)dstSubresourceLayout[0].rowPitch,                                // dst_stride_y,
@@ -201,8 +201,8 @@ VkResult VkVideoEncoder::SubmitStagedInputFrame(VkSharedBaseObj<VkVideoEncodeFra
 
             // One can also look at the linear input instead
             // displayEncoderInputFrame.imageView = currentEncodeFrameData->m_linearInputImage;
-            displayEncoderInputFrame.displayWidth  = m_encoderConfig->input.width;
-            displayEncoderInputFrame.displayHeight = m_encoderConfig->input.height;
+            displayEncoderInputFrame.displayWidth  = m_encoderConfig->encodeWidth;
+            displayEncoderInputFrame.displayHeight = m_encoderConfig->encodeHeight;
 
             m_displayQueue.EnqueueFrame(&displayEncoderInputFrame);
         }
@@ -265,20 +265,6 @@ VkResult VkVideoEncoder::AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFram
         return result;
     }
 
-    if(encodeFrameInfo->bitstreamHeaderBufferSize > 0) {
-        size_t nonVcl = fwrite(encodeFrameInfo->bitstreamHeaderBuffer + encodeFrameInfo->bitstreamHeaderOffset,
-               1, encodeFrameInfo->bitstreamHeaderBufferSize,
-               m_encoderConfig->outputFileHandler.GetFileHandle());
-
-        if (m_encoderConfig->verboseFrameStruct) {
-            std::cout << ">>>>>> Non-Vcl data" << (nonVcl ? "SUCCESS" : "FAIL")
-                      << " File Output non-VCL data with size: " << encodeFrameInfo->bitstreamHeaderBufferSize
-                      << ", Input Order: " << encodeFrameInfo->gopPosition.inputOrder
-                      << ", Encode  Order: " << encodeFrameInfo->gopPosition.encodeOrder
-                      << std::endl << std::flush;
-        }
-    }
-
     VkDeviceSize maxSize;
     uint8_t* data = encodeFrameInfo->outputBitstreamBuffer->GetDataPtr(0, maxSize);
 
@@ -310,11 +296,18 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     // Update the video profile
     encoderConfig->InitVideoProfile();
 
-    encoderConfig->InitDeviceCapbilities(m_vkDevCtx);
+    encoderConfig->InitDeviceCapabilities(m_vkDevCtx);
+
+    if (encoderConfig->useDpbArray == false &&
+        (encoderConfig->videoCapabilities.flags & VK_VIDEO_CAPABILITY_SEPARATE_REFERENCE_IMAGES_BIT_KHR) == 0) {
+        std::cout << "Separate DPB was requested, but the implementation does not support it!" << std::endl;
+        assert(!"Separate DPB is not supported");
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
 
     // Reconfigure the gopStructure structure because the device may not support
     // specific GOP structure. For example it may not support B-frames.
-    // gopStructure.Init() should be called after encoderConfig->InitDeviceCapabilities().
+    // gopStructure.Init() should be called after  encoderConfig->InitDeviceCapabilities().
     m_encoderConfig->gopStructure.Init(m_encoderConfig->numFrames);
     std::cout << std::endl << "GOP frame count: " << (uint32_t)m_encoderConfig->gopStructure.GetGopFrameCount();
     std::cout << ", IDR period: " << (uint32_t)m_encoderConfig->gopStructure.GetIdrPeriod();
@@ -325,7 +318,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
 
     m_encoderConfig->gopStructure.DumpFramesGopStructure(0, maxFramesToDump);
 
-    // The the required num of DPB images
+    // The required num of DPB images
     m_maxActiveReferencePictures = encoderConfig->InitDpbCount();
 
     encoderConfig->InitRateControl();
@@ -351,10 +344,10 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         return result;
     }
 
-
     m_imageDpbFormat = supportedDpbFormats[0];
     m_imageInFormat = supportedInFormats[0];
 
+    // m_maxCodedExtent = { encoderConfig->encodeWidth, encoderConfig->encodeHeight }; // codedSize
     m_maxCodedExtent = { encoderConfig->input.width, encoderConfig->input.height }; // codedSize
 
     const uint32_t maxReferencePicturesSlotsCount = encoderConfig->videoCapabilities.maxActiveReferencePictures;
@@ -471,8 +464,8 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                                        m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(),
                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                        encoderConfig->videoCoreProfile.GetProfile(), // pVideoProfile
-                                       false,   // useImageArray      TODO: check properties
-                                       false,   // useImageViewArray  TODO: check properties
+                                       encoderConfig->useDpbArray,                   // useImageArray
+                                       false,   // useImageViewArrays
                                        false    // useLinear
                                       );
     if(result != VK_SUCCESS) {
@@ -573,7 +566,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     if (m_enableEncoderQueue) {
 
         const uint32_t maxPendingQueueNodes = 2;
-        m_encoderQueue.SetMaxPendingQueueNodes(std::min<uint32_t>(m_encoderConfig->gopStructure.GetGopFrameCount() + 1, maxPendingQueueNodes));
+        m_encoderThreadQueue.SetMaxPendingQueueNodes(std::min<uint32_t>(m_encoderConfig->gopStructure.GetGopFrameCount() + 1, maxPendingQueueNodes));
         m_encoderQueueConsumerThread = std::thread(&VkVideoEncoder::ConsumerThread, this);
     }
     return VK_SUCCESS;
@@ -1009,7 +1002,7 @@ VkResult VkVideoEncoder::PushOrderedFrames()
 
         if (m_enableEncoderQueue) {
 
-            bool success = m_encoderQueue.Push(m_lastDeferredFrame);
+            bool success = m_encoderThreadQueue.Push(m_lastDeferredFrame);
             if (success) {
                 m_lastDeferredFrame = nullptr;
             } else {
@@ -1063,7 +1056,7 @@ bool VkVideoEncoder::WaitForThreadsToComplete()
     PushOrderedFrames();
 
     if (m_enableEncoderQueue) {
-        m_encoderQueue.SetFlushAndExit();
+        m_encoderThreadQueue.SetFlushAndExit();
         if (m_encoderQueueConsumerThread.joinable()) {
             m_encoderQueueConsumerThread.join();
         }
@@ -1101,7 +1094,7 @@ void VkVideoEncoder::ConsumerThread()
    std::cout << "ConsumerThread is stating now.\n" << std::endl;
    do {
        VkSharedBaseObj<VkVideoEncodeFrameInfo> encodeFrameInfo;
-       bool success = m_encoderQueue.WaitAndPop(encodeFrameInfo);
+       bool success = m_encoderThreadQueue.WaitAndPop(encodeFrameInfo);
        if (success) { // 5 seconds in nanoseconds
            std::cout << "==>>>> Consumed: " << (uint32_t)encodeFrameInfo->gopPosition.inputOrder
                       << ", Order: " << (uint32_t)encodeFrameInfo->gopPosition.encodeOrder << std::endl << std::flush;
@@ -1109,14 +1102,14 @@ void VkVideoEncoder::ConsumerThread()
            VkResult result = ProcessOrderedFrames(encodeFrameInfo, 0);
            if (result != VK_SUCCESS) {
                std::cout << "Error processing frames from the frame thread!" << std::endl;
-               m_encoderQueue.SetFlushAndExit();
+               m_encoderThreadQueue.SetFlushAndExit();
            }
 
        } else {
-           bool shouldExit = m_encoderQueue.ExitQueue();
+           bool shouldExit = m_encoderThreadQueue.ExitQueue();
            std::cout << "Thread should exit: " << (shouldExit ? "Yes" : "No") << std::endl;
        }
-   } while (!m_encoderQueue.ExitQueue());
+   } while (!m_encoderThreadQueue.ExitQueue());
 
    std::cout << "ConsumerThread is exiting now.\n" << std::endl;
 }

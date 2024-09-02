@@ -67,7 +67,7 @@ uint32_t EncoderConfigH265::GetCpbVclFactor()
     return baseFactor + depthFactor;
 }
 
-VkResult EncoderConfigH265::InitDeviceCapbilities(const VulkanDeviceContext* vkDevCtx)
+VkResult EncoderConfigH265::InitDeviceCapabilities(const VulkanDeviceContext* vkDevCtx)
 {
     VkResult result = VulkanVideoCapabilities::GetVideoEncodeCapabilities<VkVideoEncodeH265CapabilitiesKHR, VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_CAPABILITIES_KHR>
                                                                 (vkDevCtx, videoCoreProfile,
@@ -412,7 +412,11 @@ bool EncoderConfigH265::InitRateControl()
     if (profileTierLevel.general_profile_idc == STD_VIDEO_H265_PROFILE_IDC_INVALID) {
         profileTierLevel.general_profile_idc = STD_VIDEO_H265_PROFILE_IDC_MAIN;
     }
-    uint32_t level = profileTierLevel.general_profile_idc;
+    uint32_t level = profileTierLevel.general_level_idc;
+    if (level >= levelLimitsTblSize) {
+        assert(!"The h.265 level index is invalid");
+        return false;
+    }
     uint32_t cpbVclFactor = GetCpbVclFactor();
 
     // Safe default maximum bitrate
