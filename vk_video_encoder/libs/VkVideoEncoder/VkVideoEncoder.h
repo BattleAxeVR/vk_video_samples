@@ -62,7 +62,8 @@ public:
         VkVideoEncodeFrameInfo(const void* pNext = nullptr)
             : encodeInfo{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR, pNext}
             , frameInputOrderNum(uint64_t(-1))
-            , frameEncodeOrderNum(uint64_t(-1))
+            , frameEncodeInputOrderNum(uint64_t(-1))
+            , frameEncodeEncodeOrderNum(uint64_t(-1))
             , gopPosition(uint32_t(-1))
             , picOrderCntVal(-1)
             , inputTimeStamp(0)
@@ -109,7 +110,8 @@ public:
 
         VkVideoEncodeInfoKHR                               encodeInfo;
         uint64_t                                           frameInputOrderNum;          // == encoder input order in sequence
-        uint64_t                                           frameEncodeOrderNum;         // == encoder encode input order sequence number
+        uint64_t                                           frameEncodeInputOrderNum;    // == encoder input order sequence number
+        uint64_t                                           frameEncodeEncodeOrderNum;   // == encoder encode order sequence number
         VkVideoGopStructure::GopPosition                   gopPosition;
         int32_t                                            picOrderCntVal;
         uint64_t                                           inputTimeStamp;
@@ -181,6 +183,8 @@ public:
                 return VK_SUCCESS;  // Base case: No more frames, return success
             }
 
+            assert(processFramesIndex < totalFrameCount);
+
             // Invoke the callback for the current frame
             VkResult result = callback(frame, processFramesIndex, totalFrameCount);
             if (result != VK_SUCCESS) {
@@ -195,19 +199,49 @@ public:
                                  processFramesIndex, totalFrameCount, callback);
         }
 
+        template <typename Callback>
+        static VkResult ProcessFramesReverse(VkVideoEncoder* encoder,
+                                             VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame,
+                                             uint32_t& lastFramesIndex,
+                                             uint32_t  totalFrameCount,
+                                             Callback callback)
+        {
+            if (frame == nullptr) {
+                return VK_SUCCESS;  // Base case: No more frames, return success
+            }
+
+            // Decrement the counter before processing the next frame
+            lastFramesIndex--;
+
+            assert(lastFramesIndex < totalFrameCount);
+
+            // Recursive call to process the next frame
+            VkResult result = ProcessFramesReverse(encoder, frame->dependantFrames,
+                                                   lastFramesIndex, totalFrameCount, callback);
+
+            if (result != VK_SUCCESS) {
+                return result;  // If an error occurred, return the error code
+            }
+
+            // Invoke the callback for the current frame at the end
+            return callback(frame, lastFramesIndex, totalFrameCount);
+        }
+
         virtual void Reset(bool releaseResources = true) {
             // Clear and check state
             assert(encodeInfo.sType == VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR);
             assert(encodeInfo.pNext != nullptr);
 
             if ((frameInputOrderNum == (uint64_t)-1) &&
-                (frameEncodeOrderNum = (uint64_t)-1)) {
+                (frameEncodeInputOrderNum == (uint64_t)-1) &&
+                (frameEncodeEncodeOrderNum == (uint64_t)-1)) {
                 // it is already reset
                 return;
             }
 
             frameInputOrderNum = (uint64_t)-1;          // For debugging
-            frameEncodeOrderNum = (uint64_t)-1;         // For debugging
+            frameEncodeInputOrderNum = (uint64_t)-1;    // For debugging
+            frameEncodeEncodeOrderNum = (uint64_t)-1;   // For debugging
             gopPosition.inputOrder  = uint32_t(-1);     // For debugging
             gopPosition.encodeOrder = uint32_t(-1);     // For debugging
             picOrderCntVal = -1; // For debugging
@@ -373,13 +407,14 @@ public:
         , m_encoderConfig()
         , m_vkDevCtx(vkDevCtx)
         , m_inputFrameNum(0)
-        , m_encodeFrameNum(0)
+        , m_encodeInputFrameNum(0)
+        , m_encodeEncodeFrameNum(0)
         , m_videoSession()
         , m_videoSessionParameters()
         , m_imageDpbFormat()
         , m_imageInFormat()
         , m_maxCodedExtent()
-        , m_maxActiveReferencePictures(16)
+        , m_maxDpbPicturesCount(16)
         , m_minStreamBufferSize(2 * 1024 * 1024)
         , m_streamBufferSize(m_minStreamBufferSize)
         , m_rateControlInfo{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR }
@@ -400,7 +435,7 @@ public:
         , m_useSeparateOutputImages(false)
         , m_useLinearInput(false)
         , m_resetEncoder(false)
-        , m_enableEncoderQueue(false)
+        , m_enableEncoderThreadQueue(false)
         , m_verbose(false)
         , m_numDeferredFrames()
         , m_controlCmd(VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR |
@@ -475,14 +510,11 @@ public:
     virtual VkResult AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
                                            uint32_t frameIdx, uint32_t ofTotalFrames);
 
-    VkResult PrintVideoCodingLink(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo, uint32_t frameIdx, uint32_t ofTotalFrames)
+    VkResult StartOfVideoCodingEncodeOrder(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo, uint32_t frameIdx, uint32_t ofTotalFrames)
     {
-        if (true) {
-            std::cout << "Encode: " << frameIdx << " of " << ofTotalFrames
-                      << " " << VkVideoGopStructure::GetFrameTypeName(encodeFrameInfo->gopPosition.pictureType)
-                      << ", frameEncodeOrderNum: " << (uint32_t)encodeFrameInfo->frameEncodeOrderNum
-                      << ", GOP input order: " << encodeFrameInfo->gopPosition.inputOrder
-                      << ", GOP encode  order: " << encodeFrameInfo->gopPosition.encodeOrder << std::endl << std::flush;
+        encodeFrameInfo->frameEncodeEncodeOrderNum = m_encodeEncodeFrameNum++;
+        if (m_encoderConfig->verboseFrameStruct) {
+            DumpStateInfo("start encoding", 2, encodeFrameInfo, frameIdx, ofTotalFrames);
         }
         return VK_SUCCESS;
     }
@@ -507,6 +539,7 @@ protected:
     VkResult CopyLinearToOptimalImage(VkCommandBuffer& commandBuffer,
                                       VkSharedBaseObj<VkImageResourceView>& srcImageView,
                                       VkSharedBaseObj<VkImageResourceView>& dstImageView,
+                                      const VkExtent2D& copyImageExtent,
                                       uint32_t srcCopyArrayLayer = 0,
                                       uint32_t dstCopyArrayLayer = 0,
                                       VkImageLayout srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -572,6 +605,10 @@ protected:
 
     VkResult PushOrderedFrames();
     VkResult ProcessOrderedFrames(VkSharedBaseObj<VkVideoEncodeFrameInfo>& frames, uint32_t numFrames);
+    VkResult ProcessOutOfOrderFrames(VkSharedBaseObj<VkVideoEncodeFrameInfo>& frames, uint32_t numFrames);
+
+    void DumpStateInfo(const char* stage, uint32_t ident, VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
+                       int32_t frameIdx = -1, uint32_t ofTotalFrames = 0) const;
 
     typedef VkThreadSafeQueue<VkSharedBaseObj<VkVideoEncodeFrameInfo>> EncoderFrameQueue;
 private:
@@ -580,13 +617,14 @@ protected:
     VkSharedBaseObj<EncoderConfig>                m_encoderConfig;
     const VulkanDeviceContext*                    m_vkDevCtx;
     uint64_t                                      m_inputFrameNum;
-    uint64_t                                      m_encodeFrameNum;
+    uint64_t                                      m_encodeInputFrameNum;
+    uint64_t                                      m_encodeEncodeFrameNum;
     VkSharedBaseObj<VulkanVideoSession>           m_videoSession;
     VkSharedBaseObj<VulkanVideoSessionParameters> m_videoSessionParameters;
     VkFormat                              m_imageDpbFormat;
     VkFormat                              m_imageInFormat;
     VkExtent2D                            m_maxCodedExtent;
-    uint32_t                              m_maxActiveReferencePictures;
+    uint32_t                              m_maxDpbPicturesCount;
     size_t                                m_minStreamBufferSize;
     size_t                                m_streamBufferSize;
     VkVideoEncodeQualityLevelInfoKHR      m_qualityLevelInfo;
@@ -609,7 +647,7 @@ protected:
     uint32_t m_useSeparateOutputImages : 1;
     uint32_t m_useLinearInput : 1;
     uint32_t m_resetEncoder : 1;
-    uint32_t m_enableEncoderQueue : 1;
+    uint32_t m_enableEncoderThreadQueue : 1;
     uint32_t m_verbose : 1;
     uint32_t                                 m_numDeferredFrames;
     VkVideoCodingControlFlagsKHR             m_controlCmd;

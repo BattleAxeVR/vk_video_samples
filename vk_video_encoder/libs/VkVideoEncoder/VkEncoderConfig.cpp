@@ -39,6 +39,8 @@ void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
     --encodeOffsetY                 <integer> : Encoded offset Y \n\
     --encodeWidth                   <integer> : Encoded width \n\
     --encodeHeight                  <integer> : Encoded height \n\
+    --encodeMaxWidth                <integer> : Encoded max width - the maximum content width supported. Used with content resize.\n\
+    --encodeMaxHeight               <integer> : Encoded max height - the maximum content height supported. Used with content resize. \n\
     --minQp                         <integer> : Minimum QP value in the range [0, 51] \n\
     --maxQp                         <integer> : Maximum QP value in the range [0, 51] \n\
     --gopFrameCount                 <integer> : Number of frame in the GOP, default 16\n\
@@ -53,7 +55,8 @@ void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
     --rateControlMode               <integer> or <string>: select different rate control modes: \n\
                                         default(0), disabled(1), cbr(2), vbr(4)\n\
     --deviceID                      <string>  : DeviceID to be used, \n\
-    --deviceUuid                    <string>  : deviceUuid to be used \n");
+    --deviceUuid                    <string>  : deviceUuid to be used \n\
+    --testOutOfOrderRecording      Testing only: enable testing for out-of-order-recording\n");
 
     if ((codec == VK_VIDEO_CODEC_OPERATION_NONE_KHR) || (codec == VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR)) {
         fprintf(stderr, "\nH264 specific arguments: None\n");
@@ -253,6 +256,16 @@ int EncoderConfig::ParseArguments(int argc, char *argv[])
                 fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
                 return -1;
             }
+        } else if (args[i] == "--encodeMaxWidth") {
+            if ((++i >= argc) || (sscanf(args[i].c_str(), "%u", &encodeMaxWidth) != 1)) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+        } else if (args[i] == "--encodeMaxHeight") {
+            if ((++i >= argc) || (sscanf(args[i].c_str(), "%u", &encodeMaxHeight) != 1)) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
         } else if (args[i] == "--minQp") {
             if (++i >= argc || sscanf(args[i].c_str(), "%u", &minQp) != 1) {
                 fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
@@ -373,6 +386,8 @@ int EncoderConfig::ParseArguments(int argc, char *argv[])
                                "deviceUuid must be represented by 16 hex (32 bytes) values.", args[i].c_str(), args[i].length());
                 return -1;
             }
+        } else if (args[i] == "--testOutOfOrderRecording") {
+            enableOutOfOrderRecording = true;
         } else {
             argcount++;
             arglist.push_back((char*)args[i].c_str());
@@ -410,6 +425,22 @@ int EncoderConfig::ParseArguments(int argc, char *argv[])
 
     if ((encodeHeight == 0) || (encodeHeight > input.height)) {
         encodeHeight = input.height;
+    }
+
+    if ((encodeMaxWidth != 0) && (encodeWidth > encodeMaxWidth)) {
+        encodeWidth = encodeMaxWidth;
+    }
+
+    if ((encodeMaxHeight != 0) && (encodeHeight > encodeMaxHeight)) {
+        encodeHeight = encodeMaxHeight;
+    }
+
+    if (encodeMaxWidth == 0) {
+        encodeMaxWidth = encodeWidth;
+    }
+
+    if (encodeMaxHeight == 0) {
+        encodeMaxHeight = encodeHeight;
     }
 
     if (minQp == -1) {

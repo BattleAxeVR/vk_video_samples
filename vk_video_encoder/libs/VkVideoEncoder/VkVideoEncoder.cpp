@@ -92,9 +92,8 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
                 (int)dstSubresourceLayout[0].rowPitch,                                // dst_stride_y,
                 writeImagePtr + dstSubresourceLayout[1].offset,                       // dst_uv,
                 (int)dstSubresourceLayout[1].rowPitch,                                // dst_stride_uv,
-                m_encoderConfig->input.width,
-                m_encoderConfig->input.height)) {
-
+                std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),     // width
+                std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height))) { // height
 
         // On success, stage the input frame for the encoder video input
         StageInputFrame(encodeFrameInfo);
@@ -140,7 +139,12 @@ VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
     (void)linearImgNewLayout;
     (void)srcImgNewLayout;
 
-    CopyLinearToOptimalImage(cmdBuf, linearInputImageView, srcEncodeImageView);
+    VkExtent2D copyImageExtent {
+        std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),
+        std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height)
+    };
+
+    CopyLinearToOptimalImage(cmdBuf, linearInputImageView, srcEncodeImageView, copyImageExtent);
 
     VkResult result = encodeFrameInfo->inputCmdBuffer->EndCommandBufferRecording(cmdBuf);
 
@@ -214,6 +218,11 @@ VkResult VkVideoEncoder::SubmitStagedInputFrame(VkSharedBaseObj<VkVideoEncodeFra
 VkResult VkVideoEncoder::AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
                                                uint32_t frameIdx, uint32_t ofTotalFrames)
 {
+
+    if (m_encoderConfig->verboseFrameStruct) {
+        DumpStateInfo("assemble bitstream", 6, encodeFrameInfo, frameIdx, ofTotalFrames);
+    }
+
     assert(encodeFrameInfo->outputBitstreamBuffer != nullptr);
     assert(encodeFrameInfo->encodeCmdBuffer != nullptr);
 
@@ -223,7 +232,7 @@ VkResult VkVideoEncoder::AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFram
                m_encoderConfig->outputFileHandler.GetFileHandle());
 
         if (m_encoderConfig->verboseFrameStruct) {
-            std::cout << ">>>>>> Non-Vcl data" << (nonVcl ? "SUCCESS" : "FAIL")
+            std::cout << "       == Non-Vcl data " << (nonVcl ? "SUCCESS" : "FAIL")
                       << " File Output non-VCL data with size: " << encodeFrameInfo->bitstreamHeaderBufferSize
                       << ", Input Order: " << encodeFrameInfo->gopPosition.inputOrder
                       << ", Encode  Order: " << encodeFrameInfo->gopPosition.encodeOrder
@@ -257,12 +266,18 @@ VkResult VkVideoEncoder::AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFram
                                              1, sizeof(encodeResult), &encodeResult, sizeof(encodeResult),
                                              VK_QUERY_RESULT_WITH_STATUS_BIT_KHR | VK_QUERY_RESULT_WAIT_BIT);
 
-    assert(result == VK_SUCCESS);
-    assert(encodeResult.status == VK_QUERY_RESULT_STATUS_COMPLETE_KHR);
 
     if(result != VK_SUCCESS) {
         fprintf(stderr, "\nRetrieveData Error: Failed to get vcl query pool results.\n");
+        assert(result == VK_SUCCESS);
         return result;
+    }
+
+    if (encodeResult.status != VK_QUERY_RESULT_STATUS_COMPLETE_KHR) {
+        fprintf(stderr, "\nencodeResult.status is (0x%x) NOT STATUS_COMPLETE! bitstreamStartOffset %u, bitstreamSize %u\n",
+                encodeResult.status, encodeResult.bitstreamStartOffset, encodeResult.bitstreamSize);
+        assert(encodeResult.status == VK_QUERY_RESULT_STATUS_COMPLETE_KHR);
+        return VK_INCOMPLETE;
     }
 
     VkDeviceSize maxSize;
@@ -272,7 +287,7 @@ VkResult VkVideoEncoder::AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFram
                         m_encoderConfig->outputFileHandler.GetFileHandle());
 
     if (m_encoderConfig->verboseFrameStruct) {
-        std::cout << ">>>>>> Output VCL data " << (vcl ? "SUCCESS" : "FAIL") << " with size: " << encodeResult.bitstreamSize
+        std::cout << "       == Output VCL data " << (vcl ? "SUCCESS" : "FAIL") << " with size: " << encodeResult.bitstreamSize
                   << " and offset: " << encodeResult.bitstreamStartOffset
                   << ", Input Order: " << encodeFrameInfo->gopPosition.inputOrder
                   << ", Encode  Order: " << encodeFrameInfo->gopPosition.encodeOrder << std::endl << std::flush;
@@ -316,10 +331,12 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     const uint64_t maxFramesToDump = std::min<uint32_t>(m_encoderConfig->numFrames, m_encoderConfig->gopStructure.GetGopFrameCount() + 19);
     m_encoderConfig->gopStructure.PrintGopStructure(maxFramesToDump);
 
-    m_encoderConfig->gopStructure.DumpFramesGopStructure(0, maxFramesToDump);
+    if (m_encoderConfig->verboseFrameStruct) {
+        m_encoderConfig->gopStructure.DumpFramesGopStructure(0, maxFramesToDump);
+    }
 
     // The required num of DPB images
-    m_maxActiveReferencePictures = encoderConfig->InitDpbCount();
+    m_maxDpbPicturesCount = encoderConfig->InitDpbCount();
 
     encoderConfig->InitRateControl();
 
@@ -347,10 +364,10 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     m_imageDpbFormat = supportedDpbFormats[0];
     m_imageInFormat = supportedInFormats[0];
 
-    // m_maxCodedExtent = { encoderConfig->encodeWidth, encoderConfig->encodeHeight }; // codedSize
-    m_maxCodedExtent = { encoderConfig->input.width, encoderConfig->input.height }; // codedSize
+    m_maxCodedExtent = { encoderConfig->encodeMaxWidth, encoderConfig->encodeMaxHeight }; // max coded size
 
-    const uint32_t maxReferencePicturesSlotsCount = encoderConfig->videoCapabilities.maxActiveReferencePictures;
+    const uint32_t maxActiveReferencePicturesCount = encoderConfig->videoCapabilities.maxActiveReferencePictures;
+    const uint32_t maxDpbPicturesCount = std::min<uint32_t>(m_maxDpbPicturesCount, encoderConfig->videoCapabilities.maxDpbSlots);
 
     VkVideoSessionCreateFlagsKHR sessionCreateFlags{};
 #ifdef VK_KHR_video_maintenance1
@@ -368,9 +385,8 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                                            m_imageInFormat,
                                            m_maxCodedExtent,
                                            m_imageDpbFormat,
-                                           m_maxActiveReferencePictures,
-                                           std::max<uint32_t>(m_maxActiveReferencePictures,
-                                                              maxReferencePicturesSlotsCount)) ) {
+                                           maxDpbPicturesCount,
+                                           maxActiveReferencePicturesCount) ) {
 
         result = VulkanVideoSession::Create( m_vkDevCtx,
                                              sessionCreateFlags,
@@ -379,9 +395,8 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                                              m_imageInFormat,
                                              m_maxCodedExtent,
                                              m_imageDpbFormat,
-                                             m_maxActiveReferencePictures,
-                                             std::max<uint32_t>(m_maxActiveReferencePictures,
-                                                                maxReferencePicturesSlotsCount),
+                                             maxDpbPicturesCount,
+                                             maxActiveReferencePicturesCount,
                                              m_videoSession);
 
         // after creating a new video session, we need a codec reset.
@@ -389,10 +404,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         assert(result == VK_SUCCESS);
     }
 
-    VkExtent2D imageExtent {
-        std::max(m_maxCodedExtent.width, encoderConfig->videoCapabilities.minCodedExtent.width),
-        std::max(m_maxCodedExtent.height, encoderConfig->videoCapabilities.minCodedExtent.height)
-    };
+
 
     const VkImageUsageFlags inImageUsage = ( VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR |
                                              VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
@@ -406,10 +418,15 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         return result;
     }
 
+    VkExtent2D linearInputImageExtent {
+        std::max(m_maxCodedExtent.width,  encoderConfig->input.width),
+        std::max(m_maxCodedExtent.height, encoderConfig->input.height)
+    };
+
     result = m_linearInputImagePool->Configure( m_vkDevCtx,
                                                 encoderConfig->numInputImages,
                                                 m_imageInFormat,
-                                                imageExtent,
+                                                linearInputImageExtent,
                                                   ( VK_IMAGE_USAGE_SAMPLED_BIT |
                                                     VK_IMAGE_USAGE_STORAGE_BIT |
                                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT),
@@ -432,6 +449,11 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         fprintf(stderr, "\nInitEncoder Error: Failed to create inputImagePool.\n");
         return result;
     }
+
+    VkExtent2D imageExtent {
+        std::max(m_maxCodedExtent.width, encoderConfig->videoCapabilities.minCodedExtent.width),
+        std::max(m_maxCodedExtent.height, encoderConfig->videoCapabilities.minCodedExtent.height)
+    };
 
     result = m_inputImagePool->Configure( m_vkDevCtx,
                                           encoderConfig->numInputImages,
@@ -457,7 +479,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     }
 
     result = m_dpbImagePool->Configure(m_vkDevCtx,
-                                       maxReferencePicturesSlotsCount + 4,
+                                       std::max<uint32_t>(maxDpbPicturesCount, maxActiveReferencePicturesCount) + 4,
                                        m_imageDpbFormat,
                                        imageExtent,
                                        dpbImageUsage,
@@ -563,7 +585,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     }
 
     // Start the queue consumer thread
-    if (m_enableEncoderQueue) {
+    if (m_enableEncoderThreadQueue) {
 
         const uint32_t maxPendingQueueNodes = 2;
         m_encoderThreadQueue.SetMaxPendingQueueNodes(std::min<uint32_t>(m_encoderConfig->gopStructure.GetGopFrameCount() + 1, maxPendingQueueNodes));
@@ -702,6 +724,7 @@ VkImageLayout VkVideoEncoder::TransitionImageLayout(VkCommandBuffer cmdBuf,
 VkResult VkVideoEncoder::CopyLinearToOptimalImage(VkCommandBuffer& commandBuffer,
                                                   VkSharedBaseObj<VkImageResourceView>& srcImageView,
                                                   VkSharedBaseObj<VkImageResourceView>& dstImageView,
+                                                  const VkExtent2D& copyImageExtent,
                                                   uint32_t srcCopyArrayLayer,
                                                   uint32_t dstCopyArrayLayer,
                                                   VkImageLayout srcImageLayout,
@@ -711,6 +734,12 @@ VkResult VkVideoEncoder::CopyLinearToOptimalImage(VkCommandBuffer& commandBuffer
 
     const VkSharedBaseObj<VkImageResource>& srcImageResource = srcImageView->GetImageResource();
     const VkSharedBaseObj<VkImageResource>& dstImageResource = dstImageView->GetImageResource();
+
+    assert(srcImageResource->GetImageCreateInfo().extent.width  >= copyImageExtent.width);
+    assert(srcImageResource->GetImageCreateInfo().extent.height >= copyImageExtent.height);
+
+    assert(dstImageResource->GetImageCreateInfo().extent.width  >= copyImageExtent.width);
+    assert(dstImageResource->GetImageCreateInfo().extent.height >= copyImageExtent.height);
 
     const VkFormat format = srcImageResource->GetImageCreateInfo().format;
 
@@ -722,7 +751,9 @@ VkResult VkVideoEncoder::CopyLinearToOptimalImage(VkCommandBuffer& commandBuffer
 
     // Copy src buffer to image.
     VkImageCopy copyRegion[3]{};
-    copyRegion[0].extent = srcImageResource->GetImageCreateInfo().extent;
+    copyRegion[0].extent.width  = copyImageExtent.width;
+    copyRegion[0].extent.height = copyImageExtent.height;
+    copyRegion[0].extent.depth  = 1;
     copyRegion[0].srcSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT;
     copyRegion[0].srcSubresource.mipLevel = 0;
     copyRegion[0].srcSubresource.baseArrayLayer = srcCopyArrayLayer;
@@ -836,6 +867,11 @@ VkResult VkVideoEncoder::HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
 VkResult VkVideoEncoder::RecordVideoCodingCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
                                               uint32_t frameIdx, uint32_t ofTotalFrames)
 {
+
+    if (m_encoderConfig->verboseFrameStruct) {
+        DumpStateInfo("cmdBuf recording", 4, encodeFrameInfo, frameIdx, ofTotalFrames);
+    }
+
     // Get a encodeCmdBuffer pool to record the video commands
     bool success = m_encodeCommandBufferPool->GetAvailablePoolNode(encodeFrameInfo->encodeCmdBuffer);
     assert(success);
@@ -956,6 +992,11 @@ VkResult VkVideoEncoder::RecordVideoCodingCmds(VkSharedBaseObj<VkVideoEncodeFram
 VkResult VkVideoEncoder::SubmitVideoCodingCmds(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
                                                uint32_t frameIdx, uint32_t ofTotalFrames)
 {
+
+    if (m_encoderConfig->verboseFrameStruct) {
+        DumpStateInfo("queue submit", 5, encodeFrameInfo, frameIdx, ofTotalFrames);
+    }
+
     assert(encodeFrameInfo);
     assert(encodeFrameInfo->encodeCmdBuffer != nullptr);
 
@@ -1000,7 +1041,7 @@ VkResult VkVideoEncoder::PushOrderedFrames()
     VkResult result = VK_SUCCESS;
     if (m_lastDeferredFrame) {
 
-        if (m_enableEncoderQueue) {
+        if (m_enableEncoderThreadQueue) {
 
             bool success = m_encoderThreadQueue.Push(m_lastDeferredFrame);
             if (success) {
@@ -1012,8 +1053,11 @@ VkResult VkVideoEncoder::PushOrderedFrames()
 
         } else {
 
-            result = ProcessOrderedFrames(m_lastDeferredFrame, m_numDeferredFrames);
-
+            if (!m_encoderConfig->enableOutOfOrderRecording) {
+                result = ProcessOrderedFrames(m_lastDeferredFrame, m_numDeferredFrames);
+            } else {
+                result = ProcessOutOfOrderFrames(m_lastDeferredFrame, m_numDeferredFrames);
+            }
             VkVideoEncodeFrameInfo::ReleaseChildrenFrames(m_lastDeferredFrame);
             assert(m_lastDeferredFrame == nullptr);
         }
@@ -1024,8 +1068,8 @@ VkResult VkVideoEncoder::PushOrderedFrames()
 
 VkResult VkVideoEncoder::ProcessOrderedFrames(VkSharedBaseObj<VkVideoEncodeFrameInfo>& frames, uint32_t numFrames) {
 
-    std::vector<std::pair<std::string, std::function<VkResult(VkSharedBaseObj<VkVideoEncodeFrameInfo>&, uint32_t, uint32_t)>>> callbacks = {
-        {"PrintVideoCodingLink",  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return PrintVideoCodingLink(frame, frameIdx, ofTotalFrames); }},
+    static const std::vector<std::pair<std::string, std::function<VkResult(VkSharedBaseObj<VkVideoEncodeFrameInfo>&, uint32_t, uint32_t)>>> callbacks = {
+        {"PrintVideoCodingLink",  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return StartOfVideoCodingEncodeOrder(frame, frameIdx, ofTotalFrames); }},
         {"ProcessDpb",            [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return ProcessDpb(frame, frameIdx, ofTotalFrames); }},
         {"RecordVideoCodingCmd",  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return RecordVideoCodingCmd(frame, frameIdx, ofTotalFrames); }},
         {"SubmitVideoCodingCmds", [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return SubmitVideoCodingCmds(frame, frameIdx, ofTotalFrames); }},
@@ -1051,11 +1095,60 @@ VkResult VkVideoEncoder::ProcessOrderedFrames(VkSharedBaseObj<VkVideoEncodeFrame
     return result;
 }
 
+VkResult VkVideoEncoder::ProcessOutOfOrderFrames(VkSharedBaseObj<VkVideoEncodeFrameInfo>& frames, uint32_t numFrames) {
+
+    static const std::vector<std::pair<bool, std::function<VkResult(VkSharedBaseObj<VkVideoEncodeFrameInfo>&, uint32_t, uint32_t)>>> callbacksSeq = {
+        {true,  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return StartOfVideoCodingEncodeOrder(frame, frameIdx, ofTotalFrames); }},
+        {true,  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return ProcessDpb(frame, frameIdx, ofTotalFrames); }},
+        {false, [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return RecordVideoCodingCmd(frame, frameIdx, ofTotalFrames); }},
+        {true,  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return SubmitVideoCodingCmds(frame, frameIdx, ofTotalFrames); }},
+        {true,  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return AssembleBitstreamData(frame, frameIdx, ofTotalFrames); }}
+    };
+
+    VkResult result = VK_SUCCESS;
+    for (const auto& pair : callbacksSeq) {
+        const auto& callback = pair.second;
+        const bool inOrder = pair.first;
+
+        if (inOrder) {
+            uint32_t processedFramesCount = 0;
+            result = VkVideoEncodeFrameInfo::ProcessFrames(this, frames, processedFramesCount, numFrames, callback);
+            assert(processedFramesCount == numFrames);
+        } else {
+            uint32_t lastFramesIndex = numFrames;
+            result = VkVideoEncodeFrameInfo::ProcessFramesReverse(this, frames, lastFramesIndex, numFrames, callback);
+            assert(lastFramesIndex == 0);
+        }
+
+        if (result != VK_SUCCESS) {
+            break;
+        }
+    }
+
+    return result;
+}
+
+void VkVideoEncoder::DumpStateInfo(const char* stageName, uint32_t ident,
+                                   VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
+                                   int32_t frameIdx, uint32_t ofTotalFrames) const
+{
+    std::cout << std::string(ident, ' ') << "===> "
+              << VkVideoCoreProfile::CodecToName(m_encoderConfig->codec) << ": "
+              << stageName << " [" <<  frameIdx << " of " << ofTotalFrames << "]"
+              << " type " << VkVideoGopStructure::GetFrameTypeName(encodeFrameInfo->gopPosition.pictureType)
+              << ", frameInputOrderNum: " << (uint32_t)encodeFrameInfo->frameEncodeInputOrderNum
+              << ", frameEncodeOrderNum: " << (uint32_t)encodeFrameInfo->frameEncodeEncodeOrderNum
+              << ", GOP input order: " << encodeFrameInfo->gopPosition.inputOrder
+              << ", GOP encode  order: " << encodeFrameInfo->gopPosition.encodeOrder
+              << " picOrderCntVal: " << encodeFrameInfo->picOrderCntVal
+              << std::endl << std::flush;
+}
+
 bool VkVideoEncoder::WaitForThreadsToComplete()
 {
     PushOrderedFrames();
 
-    if (m_enableEncoderQueue) {
+    if (m_enableEncoderThreadQueue) {
         m_encoderThreadQueue.SetFlushAndExit();
         if (m_encoderQueueConsumerThread.joinable()) {
             m_encoderQueueConsumerThread.join();
@@ -1099,7 +1192,14 @@ void VkVideoEncoder::ConsumerThread()
            std::cout << "==>>>> Consumed: " << (uint32_t)encodeFrameInfo->gopPosition.inputOrder
                       << ", Order: " << (uint32_t)encodeFrameInfo->gopPosition.encodeOrder << std::endl << std::flush;
 
-           VkResult result = ProcessOrderedFrames(encodeFrameInfo, 0);
+           VkResult result;
+           if (!m_encoderConfig->enableOutOfOrderRecording) {
+               result = ProcessOrderedFrames(encodeFrameInfo, 0);
+           } else {
+               result = ProcessOutOfOrderFrames(encodeFrameInfo, 0);
+           }
+           VkVideoEncodeFrameInfo::ReleaseChildrenFrames(encodeFrameInfo);
+           assert(encodeFrameInfo == nullptr);
            if (result != VK_SUCCESS) {
                std::cout << "Error processing frames from the frame thread!" << std::endl;
                m_encoderThreadQueue.SetFlushAndExit();

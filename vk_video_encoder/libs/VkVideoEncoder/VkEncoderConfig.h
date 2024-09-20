@@ -371,6 +371,8 @@ public:
     uint32_t encodeOffsetY;
     uint32_t encodeWidth;
     uint32_t encodeHeight;
+    uint32_t encodeMaxWidth;
+    uint32_t encodeMaxHeight;
     uint32_t startFrame;
     uint32_t numFrames;
     uint32_t codecBlockAlignment;
@@ -430,6 +432,7 @@ public:
     uint32_t enableVideoDecoder : 1;
     uint32_t enableHwLoadBalancing : 1;
     uint32_t selectVideoWithComputeQueue : 1;
+    uint32_t enableOutOfOrderRecording : 1;
 
     EncoderConfig()
     : refCount(0)
@@ -450,6 +453,8 @@ public:
     , encodeOffsetY(0)
     , encodeWidth(0)
     , encodeHeight(0)
+    , encodeMaxWidth(0)
+    , encodeMaxHeight(0)
     , startFrame(0)
     , numFrames(0)
     , codecBlockAlignment(16)
@@ -507,6 +512,7 @@ public:
     , enableVideoDecoder(false)
     , enableHwLoadBalancing(false)
     , selectVideoWithComputeQueue(false)
+    , enableOutOfOrderRecording(false)
     { }
 
     virtual ~EncoderConfig() {}
