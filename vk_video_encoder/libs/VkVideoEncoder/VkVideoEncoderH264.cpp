@@ -331,7 +331,7 @@ VkResult VkVideoEncoderH264::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
                                                    &m_h264.m_spsInfo, &pFrameInfo->stdSliceHeader,
                                                    &pFrameInfo->stdReferenceListsInfo, MAX_MEM_MGMNT_CTRL_OPS_COMMANDS);
     if (targetDpbSlot >= VkEncDpbH264::MAX_DPB_SLOTS) {
-        targetDpbSlot = (encodeFrameInfo->setupImageResource!=nullptr) + refLists.refPicListCount[0] + refLists.refPicListCount[1] + 1;
+        targetDpbSlot = static_cast<int8_t>((encodeFrameInfo->setupImageResource!=nullptr) + refLists.refPicListCount[0] + refLists.refPicListCount[1] + 1);
     }
     if (isReference) {
         assert(targetDpbSlot >= 0);
@@ -620,9 +620,7 @@ VkResult VkVideoEncoderH264::EncodeFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
         HandleCtrlCmd(encodeFrameInfo);
     }
 
-    const bool preFlushQueue = isIdr;
-    const bool postFlushQueue = encodeFrameInfo->lastFrame || isReference;
-    EnqueueFrame(encodeFrameInfo, preFlushQueue, postFlushQueue);
+    EnqueueFrame(encodeFrameInfo, isIdr, isReference);
 
     return VK_SUCCESS;
 }

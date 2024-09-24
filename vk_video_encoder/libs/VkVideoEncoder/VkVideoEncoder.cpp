@@ -57,9 +57,9 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
         bool success = m_linearInputImagePool->GetAvailableImage(encodeFrameInfo->srcStagingImageView,
                                                                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         assert(success);
-    if (!success) {
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
+        if (!success) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
         assert(encodeFrameInfo->srcStagingImageView != nullptr);
     }
 
@@ -72,32 +72,65 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
     // Map the image and read the image data.
     VkDeviceSize imageOffset = dstImageResource->GetImageDeviceMemoryOffset();
     VkDeviceSize maxSize = 0;
-    uint8_t* writeImagePtr = srcImageDeviceMemory->GetDataPtr(imageOffset, maxSize);
-    assert(writeImagePtr != nullptr);
 
     size_t fileOffset = ((uint64_t)m_encoderConfig->input.fullImageSize * encodeFrameInfo->frameInputOrderNum);
     const uint8_t* pInputFrameData = m_encoderConfig->inputFileHandler.GetMappedPtr(fileOffset);
 
+    uint8_t* writeImagePtr = srcImageDeviceMemory->GetDataPtr(imageOffset, maxSize);
+    assert(writeImagePtr != nullptr);
+
     const VkSubresourceLayout* dstSubresourceLayout = dstImageResource->GetSubresourceLayout();
 
-    // Load current frame from file and convert to NV12
-    if (0 == YCbCrConvUtilsCpu::I420ToNV12(
-                pInputFrameData + m_encoderConfig->input.planeLayouts[0].offset,      // src_y,
-                (int)m_encoderConfig->input.planeLayouts[0].rowPitch,                 // src_stride_y,
-                pInputFrameData + m_encoderConfig->input.planeLayouts[1].offset,      // src_u,
-                (int)m_encoderConfig->input.planeLayouts[1].rowPitch,                 // src_stride_u,
-                pInputFrameData + m_encoderConfig->input.planeLayouts[2].offset,      // src_v,
-                (int)m_encoderConfig->input.planeLayouts[2].rowPitch,                 // src_stride_v,
-                writeImagePtr + dstSubresourceLayout[0].offset,                       // dst_y,
-                (int)dstSubresourceLayout[0].rowPitch,                                // dst_stride_y,
-                writeImagePtr + dstSubresourceLayout[1].offset,                       // dst_uv,
-                (int)dstSubresourceLayout[1].rowPitch,                                // dst_stride_uv,
-                std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),     // width
-                std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height))) { // height
+    int yCbCrConvResult = 0;
+    if (m_encoderConfig->input.bpp == 8) {
 
+        // Load current 8-bit frame from file and convert to NV12
+        yCbCrConvResult = YCbCrConvUtilsCpu<uint8_t>::I420ToNV12(
+                    pInputFrameData + m_encoderConfig->input.planeLayouts[0].offset,         // src_y,
+                    (int)m_encoderConfig->input.planeLayouts[0].rowPitch,                    // src_stride_y,
+                    pInputFrameData + m_encoderConfig->input.planeLayouts[1].offset,         // src_u,
+                    (int)m_encoderConfig->input.planeLayouts[1].rowPitch,                    // src_stride_u,
+                    pInputFrameData + m_encoderConfig->input.planeLayouts[2].offset,         // src_v,
+                    (int)m_encoderConfig->input.planeLayouts[2].rowPitch,                    // src_stride_v,
+                    writeImagePtr + dstSubresourceLayout[0].offset,                          // dst_y,
+                    (int)dstSubresourceLayout[0].rowPitch,                                   // dst_stride_y,
+                    writeImagePtr + dstSubresourceLayout[1].offset,                          // dst_uv,
+                    (int)dstSubresourceLayout[1].rowPitch,                                   // dst_stride_uv,
+                    std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),   // width
+                    std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height)); // height
+
+    } else if (m_encoderConfig->input.bpp == 10) { // 10-bit - actually 16-bit only for now.
+
+        int shiftBits = 0;
+        if (m_encoderConfig->input.msbShift >= 0) {
+            shiftBits = m_encoderConfig->input.msbShift;
+        } else {
+            shiftBits = 16 - m_encoderConfig->input.bpp;
+        }
+
+        // Load current 10-bit frame from file and convert to P010/P016
+        yCbCrConvResult = YCbCrConvUtilsCpu<uint16_t>::I420ToNV12(
+                    (const uint16_t*)(pInputFrameData + m_encoderConfig->input.planeLayouts[0].offset), // src_y,
+                    (int)m_encoderConfig->input.planeLayouts[0].rowPitch,                               // src_stride_y,
+                    (const uint16_t*)(pInputFrameData + m_encoderConfig->input.planeLayouts[1].offset), // src_u,
+                    (int)m_encoderConfig->input.planeLayouts[1].rowPitch,                               // src_stride_u,
+                    (const uint16_t*)(pInputFrameData + m_encoderConfig->input.planeLayouts[2].offset), // src_v,
+                    (int)m_encoderConfig->input.planeLayouts[2].rowPitch,                               // src_stride_v,
+                    (uint16_t*)(writeImagePtr + dstSubresourceLayout[0].offset),                        // dst_y,
+                    (int)dstSubresourceLayout[0].rowPitch,                                              // dst_stride_y,
+                    (uint16_t*)(writeImagePtr + dstSubresourceLayout[1].offset),                        // dst_uv,
+                    (int)dstSubresourceLayout[1].rowPitch,                                              // dst_stride_uv,
+                    std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),              // width
+                    std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height),             // height
+                    shiftBits);
+
+    } else {
+        assert(!"Requested bit-depth is not supported!");
+    }
+
+    if (yCbCrConvResult == 0) {
         // On success, stage the input frame for the encoder video input
-        StageInputFrame(encodeFrameInfo);
-        return VK_SUCCESS;
+        return StageInputFrame(encodeFrameInfo);
     }
 
     return VK_ERROR_INITIALIZATION_FAILED;
@@ -112,9 +145,9 @@ VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
                                                                  VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR);
         assert(success);
         assert(encodeFrameInfo->srcEncodeImageResource != nullptr);
-    if (!success || encodeFrameInfo->srcEncodeImageResource == nullptr) {
-        return VK_ERROR_INITIALIZATION_FAILED;
-    }
+        if (!success || encodeFrameInfo->srcEncodeImageResource == nullptr) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
     }
 
     m_inputCommandBufferPool->GetAvailablePoolNode(encodeFrameInfo->inputCmdBuffer);
@@ -150,6 +183,8 @@ VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
 
     // Now submit the staged input to the queue
     SubmitStagedInputFrame(encodeFrameInfo);
+
+    encodeFrameInfo->constQp = m_encoderConfig->constQp;
 
     // and encode the input frame with the encoder next
     EncodeFrame(encodeFrameInfo);
@@ -1056,19 +1091,21 @@ VkResult VkVideoEncoder::PushOrderedFrames()
             if (!m_encoderConfig->enableOutOfOrderRecording) {
                 result = ProcessOrderedFrames(m_lastDeferredFrame, m_numDeferredFrames);
             } else {
+                // Testing only - don't use for production!
                 result = ProcessOutOfOrderFrames(m_lastDeferredFrame, m_numDeferredFrames);
             }
             VkVideoEncodeFrameInfo::ReleaseChildrenFrames(m_lastDeferredFrame);
             assert(m_lastDeferredFrame == nullptr);
         }
         m_numDeferredFrames = 0;
+        m_numDeferredRefFrames = 0;
     }
     return result;
 }
 
 VkResult VkVideoEncoder::ProcessOrderedFrames(VkSharedBaseObj<VkVideoEncodeFrameInfo>& frames, uint32_t numFrames) {
 
-    static const std::vector<std::pair<std::string, std::function<VkResult(VkSharedBaseObj<VkVideoEncodeFrameInfo>&, uint32_t, uint32_t)>>> callbacks = {
+    const std::vector<std::pair<std::string, std::function<VkResult(VkSharedBaseObj<VkVideoEncodeFrameInfo>&, uint32_t, uint32_t)>>> callbacks = {
         {"PrintVideoCodingLink",  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return StartOfVideoCodingEncodeOrder(frame, frameIdx, ofTotalFrames); }},
         {"ProcessDpb",            [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return ProcessDpb(frame, frameIdx, ofTotalFrames); }},
         {"RecordVideoCodingCmd",  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return RecordVideoCodingCmd(frame, frameIdx, ofTotalFrames); }},
@@ -1097,7 +1134,7 @@ VkResult VkVideoEncoder::ProcessOrderedFrames(VkSharedBaseObj<VkVideoEncodeFrame
 
 VkResult VkVideoEncoder::ProcessOutOfOrderFrames(VkSharedBaseObj<VkVideoEncodeFrameInfo>& frames, uint32_t numFrames) {
 
-    static const std::vector<std::pair<bool, std::function<VkResult(VkSharedBaseObj<VkVideoEncodeFrameInfo>&, uint32_t, uint32_t)>>> callbacksSeq = {
+    const std::vector<std::pair<bool, std::function<VkResult(VkSharedBaseObj<VkVideoEncodeFrameInfo>&, uint32_t, uint32_t)>>> callbacksSeq = {
         {true,  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return StartOfVideoCodingEncodeOrder(frame, frameIdx, ofTotalFrames); }},
         {true,  [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return ProcessDpb(frame, frameIdx, ofTotalFrames); }},
         {false, [this](VkSharedBaseObj<VkVideoEncodeFrameInfo>& frame, uint32_t frameIdx, uint32_t ofTotalFrames) { return RecordVideoCodingCmd(frame, frameIdx, ofTotalFrames); }},
@@ -1196,6 +1233,7 @@ void VkVideoEncoder::ConsumerThread()
            if (!m_encoderConfig->enableOutOfOrderRecording) {
                result = ProcessOrderedFrames(encodeFrameInfo, 0);
            } else {
+               // Testing only - don't use for production!
                result = ProcessOutOfOrderFrames(encodeFrameInfo, 0);
            }
            VkVideoEncodeFrameInfo::ReleaseChildrenFrames(encodeFrameInfo);

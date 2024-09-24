@@ -33,6 +33,7 @@ void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
     --inputChromaSubsampling        <string>  : Chromat subsapling to use, default 420 \n\
     --inputLumaPlanePitch           <integer> : Pitch for Luma plane \n\
     --inputBpp                      <integer> : Bits per pixel, default 8 \n\
+    --msbShift                      <integer> : Shift the input plane pixels to the left when bpp > 8, default: 16 - inputBpp  \n\
     --startFrame                    <integer> : Start Frame Number to be Encoded \n\
     --numFrames                     <integer> : End Frame Number to be Encoded \n\
     --encodeOffsetX                 <integer> : Encoded offset X \n\
@@ -54,7 +55,12 @@ void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
                                         default(0), hq(1), lowlatency(2), lossless(3) \n\
     --rateControlMode               <integer> or <string>: select different rate control modes: \n\
                                         default(0), disabled(1), cbr(2), vbr(4)\n\
-    --deviceID                      <string>  : DeviceID to be used, \n\
+    --averageBitrate                <integer> : Target bitrate for cbr/vbr RC modes\n\
+    --maxBitrate                    <integer> : Peak bitrate for cbr/vbr RC modes\n\
+    --qpI                           <integer> : QP or QIndex (for AV1) used for I-frames when RC disabled\n\
+    --qpP                           <integer> : QP or QIndex (for AV1) used for P-frames when RC disabled\n\
+    --qpB                           <integer> : QP or QIndex (for AV1) used for B-frames when RC disabled\n\
+    --deviceID                      <hexadec> : deviceID to be used, \n\
     --deviceUuid                    <string>  : deviceUuid to be used \n\
     --testOutOfOrderRecording      Testing only: enable testing for out-of-order-recording\n");
 
@@ -226,6 +232,11 @@ int EncoderConfig::ParseArguments(int argc, char *argv[])
                 fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
                 return -1;
             }
+        }  else if (args[i] == "--msbShift") {
+            if ((++i >= argc) || (sscanf(args[i].c_str(), "%hhu", &input.msbShift) != 1)) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
         } else if (args[i] == "--startFrame") {
             if (++i >= argc || sscanf(args[i].c_str(), "%u", &startFrame) != 1) {
                 fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
@@ -370,6 +381,32 @@ int EncoderConfig::ParseArguments(int argc, char *argv[])
                 fprintf(stderr, "Invalid rateControlMode: %s\n", rc.c_str());
                 return -1;
             }
+        }
+        else if (args[i] == "--averageBitrate") {
+            if (++i >= argc || sscanf(args[i].c_str(), "%u", &averageBitrate) != 1) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+        } else if (args[i] == "--maxBitrate") {
+                if (++i >= argc || sscanf(args[i].c_str(), "%u", &maxBitrate) != 1) {
+                    fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                    return -1;
+                }
+        } else if (args[i] == "--qpI") {
+                if (++i >= argc || sscanf(args[i].c_str(), "%u", &constQp.qpIntra) != 1) {
+                    fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                    return -1;
+                }
+        } else if (args[i] == "--qpP") {
+                if (++i >= argc || sscanf(args[i].c_str(), "%u", &constQp.qpInterP) != 1) {
+                    fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                    return -1;
+                }
+        } else if (args[i] == "--qpB") {
+                if (++i >= argc || sscanf(args[i].c_str(), "%u", &constQp.qpInterB) != 1) {
+                    fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                    return -1;
+                }
         } else if (args[i] == "--deviceID") {
             if ((++i >= argc) || (sscanf(args[i].c_str(), "%x", &deviceId) != 1)) {
                  fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
@@ -387,6 +424,8 @@ int EncoderConfig::ParseArguments(int argc, char *argv[])
                 return -1;
             }
         } else if (args[i] == "--testOutOfOrderRecording") {
+            // Testing only - don't use this feature for production!
+            fprintf(stdout, "Warning: %s should only be used for testing!\n", args[i].c_str());
             enableOutOfOrderRecording = true;
         } else {
             argcount++;
@@ -531,6 +570,14 @@ VkResult EncoderConfig::CreateCodecConfig(int argc, char *argv[],
 
 void EncoderConfig::InitVideoProfile()
 {
+    if (encodeBitDepthLuma == 0) {
+        encodeBitDepthLuma = input.bpp;
+    }
+
+    if (encodeBitDepthChroma == 0) {
+        encodeBitDepthChroma = encodeBitDepthLuma;
+    }
+
     // update the video profile
     videoCoreProfile = VkVideoCoreProfile(codec, encodeChromaSubsampling,
                                           GetComponentBitDepthFlagBits(encodeBitDepthLuma),

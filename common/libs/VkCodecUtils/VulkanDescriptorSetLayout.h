@@ -267,20 +267,20 @@ public:
 				pDescriptorWrite->dstBinding,
 				&dstBindingOffset);
 
-			size_t descriptorSize = m_descriptorBufferProperties.storageImageDescriptorSize;
-			switch(pDescriptorWrite->descriptorType) {
-			case VK_DESCRIPTOR_TYPE_SAMPLER:
-				descriptorSize = m_descriptorBufferProperties.samplerDescriptorSize;
-				// fall through
-			case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-				descriptorSize = m_descriptorBufferProperties.combinedImageSamplerDescriptorSize;
-				// fall through
-			case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-				descriptorSize = m_descriptorBufferProperties.sampledImageDescriptorSize;
-				// fall through
-			case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-			{
-				assert((dstBindingOffset + descriptorSize) < m_descriptorLayoutSize);
+            size_t descriptorSize = m_descriptorBufferProperties.storageImageDescriptorSize;
+            switch (pDescriptorWrite->descriptorType) {
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+                descriptorSize = m_descriptorBufferProperties.samplerDescriptorSize;
+                [[fallthrough]];
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                descriptorSize = m_descriptorBufferProperties.combinedImageSamplerDescriptorSize;
+                [[fallthrough]];
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+                descriptorSize = m_descriptorBufferProperties.sampledImageDescriptorSize;
+                [[fallthrough]];
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            {
+                assert((dstBindingOffset + descriptorSize) < m_descriptorLayoutSize);
 
 				VkDescriptorGetInfoEXT descriptorInfo = { VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT };
 				descriptorInfo.type = pDescriptorWrite->descriptorType;

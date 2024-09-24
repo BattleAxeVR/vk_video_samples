@@ -64,6 +64,7 @@ struct EncoderInputImageParameters
     : width(0)
     , height(0)
     , bpp(8)
+    , msbShift(-1)
     , chromaSubsampling(VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR)
     , numPlanes(3)
     , planeLayouts{}
@@ -75,6 +76,7 @@ public:
     uint32_t width;
     uint32_t height;
     uint8_t  bpp;
+    int8_t   msbShift;
     VkVideoChromaSubsamplingFlagBitsKHR chromaSubsampling;
     uint32_t numPlanes;
     VkSubresourceLayout planeLayouts[3];
@@ -390,6 +392,7 @@ public:
 
     int32_t  minQp;
     int32_t  maxQp;
+    ConstQpSettings constQp;
 
     VkVideoGopStructure gopStructure;
     int8_t dpbCount;
@@ -432,7 +435,7 @@ public:
     uint32_t enableVideoDecoder : 1;
     uint32_t enableHwLoadBalancing : 1;
     uint32_t selectVideoWithComputeQueue : 1;
-    uint32_t enableOutOfOrderRecording : 1;
+    uint32_t enableOutOfOrderRecording : 1; // Testing only - don't use for production!
 
     EncoderConfig()
     : refCount(0)
@@ -444,8 +447,8 @@ public:
     , videoProfileIdc((uint32_t)-1)
     , numInputImages(DEFAULT_NUM_INPUT_IMAGES)
     , input()
-    , encodeBitDepthLuma(input.bpp)
-    , encodeBitDepthChroma(input.bpp)
+    , encodeBitDepthLuma(0)
+    , encodeBitDepthChroma(0)
     , encodeNumPlanes(2)
     , numBitstreamBuffersToPreallocate(8)
     , encodeChromaSubsampling(VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR)
@@ -471,6 +474,7 @@ public:
     , frameRateDenominator()
     , minQp(-1)
     , maxQp(-1)
+    , constQp()
     , gopStructure(DEFAULT_GOP_FRAME_COUNT,
                    DEFAULT_GOP_IDR_PERIOD,
                    DEFAULT_CONSECUTIVE_B_FRAME_COUNT,
