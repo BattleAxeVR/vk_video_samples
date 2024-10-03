@@ -48,7 +48,7 @@ public:
         m_pBitstreamData = m_inputVideoStreamMmap.data();
     }
 
-    ElementaryStream(const uint8_t *pInput, const size_t len,
+    ElementaryStream(const uint8_t *pInput, const size_t,
                      VkVideoCodecOperationFlagBitsKHR codecType)
         : m_width(176)
         , m_height(144)
@@ -144,7 +144,7 @@ public:
     virtual float GetFrameRate() const { return 0.0f; }
     virtual bool StreamHasEnded() const { return false; };
     virtual bool Seek(int stream_index, int64_t timestamp, int flags) { return false; }
-    virtual int64_t DemuxFrame(const uint8_t **ppVideo) {
+    virtual int64_t DemuxFrame(const uint8_t**) {
         return -1;
     }
     virtual int64_t ReadBitstreamData(const uint8_t **ppVideo, int64_t offset)

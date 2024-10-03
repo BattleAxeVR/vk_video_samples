@@ -1,7 +1,7 @@
 # The name of our project is "VULKAN_VIDEO_TESTS". CMakeLists files in this project can
 # refer to the root source directory of the project as ${VULKAN_VIDEO_TESTS_SOURCE_DIR} and
 # to the root binary directory of the project as ${VULKAN_BINARY_DIR}.
-cmake_minimum_required(VERSION 2.8.11)
+cmake_minimum_required(VERSION 3.0)
 
 include(CheckCXXCompilerFlag)
 
@@ -170,7 +170,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(DEMOS_WSI_SELECTION "XCB" CACHE STRING "Select WSI target for demos (XCB, XLIB, WAYLAND, MIR, DISPLAY)")
 
     if (BUILD_WSI_XCB_SUPPORT)
+        # Workaround this spurious warning, which for this project is not an issue,
+        #
+        # The package name passed to `find_package_handle_standard_args` (xcb) does not match the name of the calling package (XCB).  This can lead to problems
+        # in calling code that expects `find_package` result variables (e.g.,`_FOUND`) to follow a certain pattern.
+        set(FPHSA_NAME_MISMATCHED 1)
         find_package(XCB REQUIRED)
+        unset(FPHSA_NAME_MISMATCHED)
     endif()
 
     if (BUILD_WSI_XLIB_SUPPORT)
@@ -178,7 +184,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 
     if (BUILD_WSI_WAYLAND_SUPPORT)
+        # See comments above for XCB
+        set(FPHSA_NAME_MISMATCHED 1)
         find_package(Wayland REQUIRED)
+        unset(FPHSA_NAME_MISMATCHED)
         include_directories(${WAYLAND_CLIENT_INCLUDE_DIR})
     endif()
 
@@ -186,13 +195,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         find_package(Mir REQUIRED)
     endif()
 
-    # FIXME - make this var be based on the build type - for now Linux Debug only.
-    if(DEFINED ENV{TEGRA_TOP})
-        add_definitions(-DNV_RMAPI_TEGRA)
-        add_definitions(-DNVCPU_ARM)
-        add_definitions(-DNV_DEBUG=1)
-    else()
-    endif()
     SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_LIBDIR}")
 endif()
 
@@ -236,7 +238,7 @@ set(SCRIPTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../scripts")
 include_directories("${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/../common/include")
 
 if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
-    set(COMMON_COMPILE_FLAGS "-Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers")
+    # set(COMMON_COMPILE_FLAGS "-Wall -Wextra -Wno-long-long -Wshadow -Wundef -Wconversion -Wno-sign-conversion -Wno-conversion -Wno-sign-compare")
     set(COMMON_COMPILE_FLAGS "${COMMON_COMPILE_FLAGS} -fno-strict-aliasing -fno-builtin-memcmp")
 
     # These flags are not supported on Windows and some older version of GCC
@@ -254,8 +256,8 @@ if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
     endif()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COMMON_COMPILE_FLAGS} -std=c++11 -fno-rtti")
     if (UNIX)
-        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fvisibility=hidden")
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fvisibility=hidden -fvisibility-inlines-hidden")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden -fvisibility-inlines-hidden")
     endif()
 endif()
 
@@ -329,20 +331,6 @@ set(EXTERNAL_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/external" CACHE STRING "Ro
 set(VK_VIDEO_COMMON_LIBS_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../common/libs" CACHE STRING "Root path to common vkvideo libs sources")
 set(VK_VIDEO_DECODER_LIBS_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/libs" CACHE STRING "Root path to common vkvideo decoder libs sources")
 set(VK_VIDEO_DECODER_LIBS_INCLUDE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/include" CACHE STRING "Root path to video decoder libs includes")
-
-if(DEFINED ENV{TEGRA_TOP})
-	MESSAGE(STATUS "TEGRA_TOP is SET: $ENV{TEGRA_TOP}")
-	set(VULKAN_TEGRA_LIBS_PATH "/usr/lib/aarch64-linux-gnu/tegra" CACHE STRING "Path to tegra so libraries")
-	set (VULKAN_LIB_SEARCH_PATH "${VULKAN_TEGRA_LIBS_PATH}" "/usr/lib/aarch64-linux-gnu" )
-	# add_definitions(-DUNINSTALLED_LOADER="libGLX_nvidia.so.0")
-elseif(DEFINED ENV{LINUX_DRIVER_BRANCH_TOP})
-	MESSAGE(STATUS "LINUX_DRIVER_BRANCH_TOP is set: $ENV{LINUX_DRIVER_BRANCH_TOP}")
-	# add_definitions(-DUNINSTALLED_LOADER="libGLX_nvidia.so.0")
-elseif(DEFINED ENV{WINDOWS_DRIVER_BRANCH_TOP})
-	MESSAGE(STATUS "WINDOWS_DRIVER_BRANCH_TOP is set: $ENV{WINDOWS_DRIVER_BRANCH_TOP}")
-else()
-	MESSAGE(STATUS "TEGRA_TOP nor LINUX_DRIVER_BRANCH_TOP nor WINDOWS_DRIVER_BRANCH_TOP are set")
-endif()
 
 if (WIN32)
     if(CUSTOM_GLSLANG_BIN_ROOT)
@@ -422,7 +410,6 @@ find_path(SPIRV_TOOLS_INCLUDE_DIR spirv-tools/libspirv.h HINTS "${EXTERNAL_SOURC
 
 set(SHADERC_ROOT_PATH "${EXTERNAL_SOURCE_ROOT}/shaderc/${BUILDTGT_DIR}")
 set(SHADERC_SEARCH_PATH "${SHADERC_ROOT_PATH}/install/lib")
-
 
 find_library(VULKAN_LIB NAMES vulkan
              HINTS ${VULKAN_LIB_SEARCH_PATH} )

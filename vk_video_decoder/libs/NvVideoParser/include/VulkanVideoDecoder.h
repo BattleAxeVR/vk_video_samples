@@ -19,6 +19,8 @@
 
 #include <atomic>
 #include <limits>
+
+#include <cpudetect.h>
 #include "VkCodecUtils/VulkanBitstreamBuffer.h"
 
 #define UNUSED_LOCAL_VAR(expr) do { (void)(expr); } while (0)
@@ -62,11 +64,10 @@ public:
         NALU_UNKNOWN,   // This NALU type is not supported (callback client)
     };
     typedef enum {
-        NV_NO_ERROR=0,           // No error detected
+        NV_NO_ERROR = 0,         // No error detected
         NV_NON_COMPLIANT_STREAM  // Stream is not compliant with codec standards
     } NVCodecErrors;
 
-    NVCodecErrors m_eError;
 protected:
     std::atomic<int32_t>             m_refCount;
     VkVideoCodecOperationFlagBitsKHR m_standard;        // Encoding standard
@@ -110,6 +111,8 @@ protected:
     int32_t m_iTargetLayer;                     // Specific to SVC only
     int32_t m_bDecoderInitFailed;               // Set when m_pClient->BeginSequence fails to create the decoder
     int32_t m_lCheckPTS;                        // Run the m_bFilterTimestamps for the first few framew to look for out of order PTS
+    NVCodecErrors m_eError;
+    SIMD_ISA m_NextStartCode;
 public:
     VulkanVideoDecoder(VkVideoCodecOperationFlagBitsKHR std);
     virtual ~VulkanVideoDecoder();
@@ -137,6 +140,19 @@ public:
     virtual VkResult Initialize(const VkParserInitDecodeParameters *pNvVkp);
     virtual bool Deinitialize();
     virtual bool ParseByteStream(const VkParserBitstreamPacket *pck, size_t *pParsedBytes);
+    template <SIMD_ISA T>
+    bool ParseByteStreamSimd(const VkParserBitstreamPacket *pck, size_t *pParsedBytes);
+    bool ParseByteStreamC(const VkParserBitstreamPacket *pck, size_t *pParsedBytes);
+#if defined(__x86_64__) || defined (_M_X64)
+    bool ParseByteStreamAVX2(const VkParserBitstreamPacket* pck, size_t *pParsedBytes);
+    bool ParseByteStreamAVX512(const VkParserBitstreamPacket* pck, size_t *pParsedBytes);
+    bool ParseByteStreamSSSE3(const VkParserBitstreamPacket* pck, size_t *pParsedBytes);
+#elif defined(__aarch64__)
+    bool ParseByteStreamSVE(const VkParserBitstreamPacket* pck, size_t *pParsedBytes);
+    bool ParseByteStreamNEON(const VkParserBitstreamPacket* pck, size_t *pParsedBytes);
+#elif defined(__ARM_ARCH_7A__) || defined(_M_ARM64)
+    bool ParseByteStreamNEON(const VkParserBitstreamPacket* pck, size_t *pParsedBytes);
+#endif
     virtual bool GetDisplayMasteringInfo(VkParserDisplayMasteringInfo *) { return false; }
 
 protected:
@@ -151,16 +167,22 @@ protected:
 
 protected:
     // Byte stream parsing
+    template<SIMD_ISA T>
     size_t next_start_code(const uint8_t *pdatain, size_t datasize, bool& found_start_code);
     void nal_unit();
     void init_dbits();
-    int32_t available_bits() { assert((m_nalu.end_offset - m_nalu.get_offset) < std::numeric_limits<int32_t>::max());
+    int32_t available_bits() {
+		// end_offset=566 - get_offset=568 for example are values seen in the debugger, causing an unsigned integer overflow below since get_btroffs is a uint32 while end_offset and get_offset are int64 explicitly casted to int32, which then gets implicitly casted to a unint32. This code could use a review from the original authors about the intentions here. The early return is to avoid the sanitizer violation and appears semantically correct.
+		if ((m_nalu.end_offset - m_nalu.get_offset) < 0)
+			return 0;
+		assert((m_nalu.end_offset - m_nalu.get_offset) < std::numeric_limits<int32_t>::max());
                                return (int32_t)(m_nalu.end_offset - m_nalu.get_offset) * 8 + (32 - m_nalu.get_bfroffs); }
     int32_t consumed_bits() { assert((m_nalu.get_offset - m_nalu.start_offset - m_nalu.get_emulcnt) < std::numeric_limits<int32_t>::max());
                           return (int32_t)(m_nalu.get_offset - m_nalu.start_offset - m_nalu.get_emulcnt) * 8 - (32 - m_nalu.get_bfroffs); }
     uint32_t next_bits(uint32_t n) { return (m_nalu.get_bfr << m_nalu.get_bfroffs) >> (32 - n); } // NOTE: n must be in the [1..25] range
     void skip_bits(uint32_t n);  // advance bitstream position
     uint32_t u(uint32_t n);   // return next n bits, advance bitstream position
+    bool flag()          { return (0 != u(1)); }     // returns flag value
     uint32_t u16_le()    { uint32_t tmp = u(8); tmp |= u(8) << 8; return tmp; }
     uint32_t u24_le()    { uint32_t tmp = u16_le(); tmp |= u(8) << 16; return tmp; }
     uint32_t u32_le()    { uint32_t tmp = u16_le(); tmp |= u16_le() << 16; return tmp; }
@@ -168,6 +190,7 @@ protected:
     int32_t se();
     uint32_t f(uint32_t n, uint32_t) { return u(n); }
     bool byte_aligned() const { return ((m_nalu.get_bfroffs & 7) == 0); }
+    void byte_alignment() { while (!byte_aligned()) u(1); }
     void end_of_picture();
     void end_of_stream();
     bool IsSequenceChange(VkParserSequenceInfo *pnvsi);

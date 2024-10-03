@@ -39,7 +39,7 @@ public:
 
     static VkSharedBaseObj<VulkanVideoProcessor>& invalidVulkanVideoProcessor;
 
-    static VkResult Create(const VulkanDeviceContext* vkDevCtx,
+    static VkResult Create(const ProgramConfig& settings, const VulkanDeviceContext* vkDevCtx,
                            VkSharedBaseObj<VulkanVideoProcessor>& vulkanVideoProcessor = invalidVulkanVideoProcessor);
 
     int32_t Initialize(const VulkanDeviceContext* vkDevCtx, ProgramConfig& programConfig);
@@ -69,7 +69,7 @@ public:
 
 private:
 
-    VulkanVideoProcessor(const VulkanDeviceContext* vkDevCtx)
+    VulkanVideoProcessor(const ProgramConfig& settings, const VulkanDeviceContext* vkDevCtx)
         : m_refCount(0),
           m_vkDevCtx(vkDevCtx),
           m_videoStreamDemuxer()
@@ -85,6 +85,7 @@ private:
         , m_loopCount(1)
         , m_startFrame(0)
         , m_maxFrameCount(-1)
+        , m_settings(settings)
     {
     }
 
@@ -100,11 +101,12 @@ private:
                                   size_t* pnVideoBytes = nullptr,
                                   bool doPartialParsing = false,
                                   uint32_t flags = 0, int64_t timestamp = 0);
-    size_t ConvertFrameToNv12(VulkanDecodedFrame* pFrame, VkSharedBaseObj<VkImageResource>& imageResource,
-                              uint8_t* pOutputBuffer, size_t bufferSize);
-
 
     bool StreamCompleted();
+
+private:
+    void WaitForFrameCompletion(VulkanDecodedFrame* pFrame, 
+                                VkSharedBaseObj<VkImageResource>& imageResource);
 
 private:
     std::atomic<int32_t>       m_refCount;
@@ -122,6 +124,7 @@ private:
     int32_t   m_loopCount;
     uint32_t  m_startFrame;
     int32_t   m_maxFrameCount;
+    const ProgramConfig& m_settings;
 };
 
 #endif /* _VULKANVIDEOPROCESSOR_H_ */

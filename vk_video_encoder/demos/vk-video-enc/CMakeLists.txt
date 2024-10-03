@@ -101,7 +101,8 @@ set(sources
     ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/VkVideoRefCountBase.h
     ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/nvVkFormats.cpp
     ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/VulkanBistreamBufferImpl.h
-    ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/VulkanBistreamBufferImpl.cpp    
+    ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/VulkanBistreamBufferImpl.cpp
+    ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/crcgenerator.cpp
     ${VK_VIDEO_DECODER_LIBS_SOURCE_ROOT}/VkDecoderUtils/FFmpegDemuxer.cpp
     ${VK_VIDEO_DECODER_LIBS_SOURCE_ROOT}/VkDecoderUtils/VideoStreamDemuxer.cpp
     ${VK_VIDEO_DECODER_LIBS_SOURCE_ROOT}/VkDecoderUtils/VideoStreamDemuxer.h
@@ -145,19 +146,6 @@ else()
     list(APPEND libraries PRIVATE -L${SHADERC_SEARCH_PATH} -lshaderc_shared)
     list(APPEND libraries PRIVATE -L${CMAKE_INSTALL_LIBDIR} -l${VULKAN_VIDEO_PARSER_LIB})
     list(APPEND libraries PRIVATE -L${LIBNVPARSER_BINARY_ROOT} -l${VULKAN_VIDEO_PARSER_LIB})
-endif()
-
-if(DEFINED ENV{TEGRA_TOP})
-    # For the Tegra parser: NvRmChipGetCapabilityU32
-    list(APPEND libraries PRIVATE -lnvrm_chip)
-    # For the Tegra parser: NvOsGetConfigString
-    list(APPEND libraries PRIVATE -lnvos)
-endif()
-
-if(DEFINED ENV{TEGRA_TOP})
-	list(APPEND definitions PRIVATE -D_FILE_OFFSET_BITS=64)
-	list(APPEND definitions PRIVATE -DNV_BUILD_CONFIGURATION_EXPOSING_T19X=1)
-	list(APPEND definitions PRIVATE -DTVMR_NVDEC4=1)
 endif()
 
 if(TARGET vulkan)

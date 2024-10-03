@@ -42,6 +42,8 @@ class VkParserVideoPictureParameters;
 class VulkanVideoFrameBuffer : public IVulkanVideoFrameBufferParserCb {
 public:
 
+    // enum class uint16_t { InvalidImageTypeIdx = (uint16_t)-1 };
+
     // Synchronization
     struct FrameSynchronizationInfo {
         VkFence frameCompleteFence;
@@ -51,7 +53,7 @@ public:
         VkQueryPool queryPool;
         uint32_t startQueryId;
         uint32_t numQueries;
-        uint32_t optimalOutputIndex : 4;
+        DecodeFrameBufferIf::ImageSpecsIndex imageSpecsIndex;
         uint32_t hasFrameCompleteSignalFence : 1;
         uint32_t hasFrameCompleteSignalSemaphore : 1;
         uint32_t syncOnFrameCompleteFence : 1;
@@ -80,15 +82,17 @@ public:
     };
 
     struct PictureResourceInfo {
-        VkImage  image;
-        VkFormat imageFormat;
+        VkImage       image;
+        VkFormat      imageFormat;
         VkImageLayout currentImageLayout;
     };
 
     struct ImageSpec {
 
         ImageSpec()
-        : imageTypeIdx((uint32_t)-1)
+        : imageTypeIdx(InvalidImageTypeIdx)
+        , reserved(0)
+        , imageTypeMask(0)
         , usesImageArray(false)
         , usesImageViewArray(false)
         , deferCreate(false)
@@ -97,7 +101,9 @@ public:
         , imageArray()
         , imageViewArray() {}
 
-        uint32_t              imageTypeIdx;  // -1 is an invalid index and the entry is skipped
+        uint8_t               imageTypeIdx;  // InvalidImageTypeIdx is an invalid index and the entry is skipped
+        uint8_t               reserved;
+        uint16_t              imageTypeMask;
         uint32_t              usesImageArray     : 1;
         uint32_t              usesImageViewArray : 1;
         uint32_t              deferCreate        : 1;
@@ -121,15 +127,15 @@ public:
                                           FrameSynchronizationInfo* pFrameSynchronizationInfo) = 0;
     virtual int32_t DequeueDecodedPicture(VulkanDecodedFrame* pDecodedFrame) = 0;
     virtual int32_t ReleaseDisplayedPicture(DecodedFrameRelease** pDecodedFramesRelease, uint32_t numFramesToRelease) = 0;
-    virtual int32_t GetImageResourcesByIndex(uint32_t numResources, const int8_t* referenceSlotIndexes, uint32_t imageTypeIdx,
+    virtual int32_t GetImageResourcesByIndex(uint32_t numResources, const int8_t* referenceSlotIndexes, uint8_t imageTypeIdx,
                                              VkVideoPictureResourceInfoKHR* pictureResources,
                                              PictureResourceInfo* pictureResourcesInfo,
                                              VkImageLayout newImageLayerLayout = VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR) = 0;
-    virtual int32_t GetCurrentImageResourceByIndex(int8_t referenceSlotIndex, uint32_t imageTypeIdx,
+    virtual int32_t GetCurrentImageResourceByIndex(int8_t referenceSlotIndex, uint8_t imageTypeIdx,
                                                    VkVideoPictureResourceInfoKHR* pPictureResource,
                                                    PictureResourceInfo* pPictureResourceInfo,
                                                    VkImageLayout newImageLayerLayout = VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR) = 0;
-    virtual int32_t GetCurrentImageResourceByIndex(int8_t referenceSlotIndex, uint32_t imageTypeIdx,
+    virtual int32_t GetCurrentImageResourceByIndex(int8_t referenceSlotIndex, uint8_t imageTypeIdx,
                                                    VkSharedBaseObj<VkImageResourceView>& imageView) = 0;
     virtual int32_t ReleaseImageResources(uint32_t numResources, const uint32_t* indexes) = 0;
     virtual uint64_t SetPicNumInDecodeOrder(int32_t picId, uint64_t picNumInDecodeOrder) = 0;
