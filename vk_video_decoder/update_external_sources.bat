@@ -3,7 +3,7 @@ REM Update source for glslang
 
 REM Determine the appropriate CMake strings for the current version of Visual Studio
 echo Determining VS version
-python .\scripts\determine_vs_version.py > vsversion.tmp
+python ..\scripts\determine_vs_version.py > vsversion.tmp
 set /p VS_VERSION=< vsversion.tmp
 echo Detected Visual Studio Version as %VS_VERSION%
 
@@ -13,8 +13,8 @@ del /Q /F vsversion.tmp
 setlocal EnableDelayedExpansion
 set errorCode=0
 set BUILD_DIR=%~dp0
-set BASE_DIR="%BUILD_DIR%\vk_video_decoder\external"
-set REVISION_DIR="%BUILD_DIR%\vk_video_decoder\external_revisions"
+set BASE_DIR="%BUILD_DIR%external"
+set REVISION_DIR="%BUILD_DIR%external_revisions"
 set GLSLANG_DIR=%BASE_DIR%\glslang
 set SHADERC_DIR=%BASE_DIR%\shaderc
 set do_32=0

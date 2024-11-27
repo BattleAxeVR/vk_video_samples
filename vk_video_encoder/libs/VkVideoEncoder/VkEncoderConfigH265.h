@@ -62,6 +62,7 @@ struct EncoderConfigH265 : public EncoderConfig {
     StdVideoH265ProfileIdc profile;
     StdVideoH265LevelIdc   levelIdc;
     VkVideoEncodeH265CapabilitiesKHR h265EncodeCapabilities;
+    VkVideoEncodeH265QuantizationMapCapabilitiesKHR h265QuantizationMapCapabilities;
     uint32_t               general_tier_flag : 1; // Specifies the level tier of the encoded bitstream.
     uint8_t                numRefL0;              // Specifies max number of L0 list reference frame used for prediction of a frame.
     uint8_t                numRefL1;              // Specifies max number of L1 list reference frame used for prediction of a frame.
@@ -158,7 +159,7 @@ struct EncoderConfigH265 : public EncoderConfig {
     // 2. First h.265 determine the rate control parameters
     virtual bool InitRateControl();
 
-    virtual uint8_t GetMaxBFrameCount() { return h265EncodeCapabilities.maxBPictureL0ReferenceCount; }
+    virtual uint8_t GetMaxBFrameCount() { return  static_cast<uint8_t>(h265EncodeCapabilities.maxBPictureL0ReferenceCount); }
 
     bool GetRateControlParameters(VkVideoEncodeRateControlInfoKHR *rcInfo,
                                   VkVideoEncodeRateControlLayerInfoKHR *pRcLayerInfo,

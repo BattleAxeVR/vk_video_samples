@@ -122,6 +122,7 @@ struct EncoderConfigH264 : public EncoderConfig {
     StdVideoH264ProfileIdc                     profileIdc;
     StdVideoH264LevelIdc                       levelIdc;
     VkVideoEncodeH264CapabilitiesKHR           h264EncodeCapabilities;
+    VkVideoEncodeH264QuantizationMapCapabilitiesKHR h264QuantizationMapCapabilities;
     uint32_t                                   hrdBitrate;           // hypothetical reference decoder bitrate
     uint32_t                                   pic_width_in_mbs;
     uint32_t                                   pic_height_in_map_units;
@@ -184,7 +185,7 @@ struct EncoderConfigH264 : public EncoderConfig {
     // 2. First h.264 determine the rate control parameters
     virtual bool InitRateControl();
 
-    virtual uint8_t GetMaxBFrameCount() { return h264EncodeCapabilities.maxBPictureL0ReferenceCount; }
+    virtual uint8_t GetMaxBFrameCount() { return static_cast<uint8_t>(h264EncodeCapabilities.maxBPictureL0ReferenceCount); }
 
     bool GetRateControlParameters(VkVideoEncodeRateControlInfoKHR *rcInfo,
                                   VkVideoEncodeRateControlLayerInfoKHR *pRcLayerInfo,

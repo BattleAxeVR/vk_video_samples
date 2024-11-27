@@ -24,6 +24,7 @@
 #include "vk_video/vulkan_video_codecs_common.h"
 #include "vk_video/vulkan_video_codec_h264std.h"
 #include "vk_video/vulkan_video_codec_h265std.h"
+#include "vk_video/vulkan_video_codec_av1std.h"
 #include "vulkan/vulkan.h"
 #include "VkCodecUtils/VkVideoRefCountBase.h"
 #include "VkVideoEncoder/VkVideoEncoderDef.h"
@@ -31,13 +32,41 @@
 #include "VkVideoCore/VkVideoCoreProfile.h"
 #include "VkVideoCore/VulkanVideoCapabilities.h"
 
-#ifndef VK_KHR_video_encode_av1
-#define VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR                  ((VkVideoCodecOperationFlagBitsKHR)0x00000000)
-#endif
-
 struct EncoderConfigH264;
 struct EncoderConfigH265;
+struct EncoderConfigAV1;
 class VulkanDeviceContext;
+
+static const size_t Y4M_MAX_BUFF_SIZE = 8192;
+
+static inline bool
+parse_int (const char * str, uint32_t * out_value_ptr)
+{
+  uint32_t saved_errno;
+  uint32_t value;
+  bool ret;
+
+  if (!str) {
+    return false;
+  }
+  str += 1;
+  if (*str == '\0') {
+    return false;
+  }
+
+  saved_errno = errno;
+  errno = 0;
+  value = (uint32_t)strtol (str, NULL, 0);
+  ret = (errno == 0);
+  errno = saved_errno;
+  if (value > 0 && value <= UINT32_MAX) {
+    *out_value_ptr = value;
+  } else {
+    ret = false;
+  }
+
+  return ret;
+}
 
 static VkVideoComponentBitDepthFlagBitsKHR GetComponentBitDepthFlagBits(uint32_t bpp)
 {
@@ -80,7 +109,7 @@ public:
     VkVideoChromaSubsamplingFlagBitsKHR chromaSubsampling;
     uint32_t numPlanes;
     VkSubresourceLayout planeLayouts[3];
-    size_t fullImageSize;
+    uint64_t fullImageSize;
     VkFormat vkFormat;
 
     bool VerifyInputs()
@@ -136,7 +165,7 @@ public:
             offset += planeLayouts[plane].size;
         }
 
-        fullImageSize = (size_t)offset;
+        fullImageSize = (uint64_t)offset;
 
         vkFormat = VkVideoCoreProfile::CodecGetVkFormat(chromaSubsampling,
                                                         GetComponentBitDepthFlagBits(bpp),
@@ -157,6 +186,7 @@ public:
     EncoderInputFileHandler()
     : m_fileName{},
       m_fileHandle(),
+      m_Y4MHeaderOffset(0),
       m_memMapedFile()
     {
 
@@ -172,7 +202,7 @@ public:
         m_memMapedFile.unmap();
 
         if (m_fileHandle != nullptr) {
-            if(fclose(m_fileHandle)) {
+            if (fclose(m_fileHandle)) {
                 fprintf(stderr, "Failed to close input file %s", m_fileName);
             }
 
@@ -208,17 +238,155 @@ public:
         return m_fileHandle;
     }
 
-    const uint8_t* GetMappedPtr(uint64_t fileOffset)
+    const uint8_t* GetMappedPtr(uint64_t frameSize, uint64_t frame_num)
     {
         assert(m_memMapedFile.is_mapped());
+        uint64_t offset = 0;
+        uint64_t frame_offset = 0;
+        uint64_t frame_i = 0;
+
+        if (m_Y4MHeaderOffset) {
+            offset += m_Y4MHeaderOffset;
+        }
+
+        while (frame_i < frame_num) {
+            if (m_Y4MHeaderOffset) {
+                frame_offset = skipY4MFrameHeader(offset);
+                offset += frame_offset;
+            }
+            frame_i++;
+            offset += frameSize;
+        }
 
         const uint64_t mappedLength = (uint64_t)m_memMapedFile.mapped_length();
-        if (mappedLength < fileOffset) {
-            printf("File overflow at fileOffset %llu\n", (unsigned long long int)fileOffset);
+        if (mappedLength < offset) {
+            printf("File overflow at fileOffset %lld\n", (long long unsigned int)offset);
             assert(!"Input file overflow");
             return nullptr;
         }
-        return m_memMapedFile.data() + fileOffset;
+
+        return m_memMapedFile.data() + offset;
+    }
+
+    bool parseY4M (uint32_t *width, uint32_t *height, uint32_t *fps_n, uint32_t *fps_d)
+    {
+        size_t i, j, s;
+        int b;
+        char header[Y4M_MAX_BUFF_SIZE];
+        bool ret = false;
+
+        memset (header, 0, Y4M_MAX_BUFF_SIZE);
+        s = fread (header, 1, 9, m_fileHandle);
+        if (s < 9 || memcmp (header, "YUV4MPEG2", 9) != 0) {
+            goto beach;
+        }
+
+        for (i = 9; i < Y4M_MAX_BUFF_SIZE - 1; i++) {
+            b = fgetc (m_fileHandle);
+            if (b == EOF) {
+                goto beach;
+            }
+            if (b == 0xa) {
+                break;
+            }
+            header[i] = (char)b;
+        }
+
+        if (i == Y4M_MAX_BUFF_SIZE - 1) {
+            goto beach;
+        }
+
+        j = 9;
+        while (j < i) {
+            if ((header[j] != 0x20) && (header[j - 1] == 0x20)) {
+                switch (header[j]) {
+                    case 'W':
+                        if (!parse_int ((char *) & header[j], width)) {
+                            goto beach;
+                        }
+                        break;
+                    case 'H':
+                        if (!parse_int ((char *) & header[j], height)) {
+                            goto beach;
+                        }
+                        break;
+                    case 'C':
+                        break;
+                    case 'I':
+                        break;
+                    case 'F':              /* frame rate ratio */
+                    {
+                        uint32_t num, den;
+
+                        if (!parse_int ((char *) & header[j], &num)) {
+                            goto beach;
+                        }
+                        while ((header[j] != ':') && (j < i)) {
+                            j++;
+                        }
+                        if (!parse_int ((char *) & header[j], &den)) {
+                            goto beach;
+                        }
+
+                        if (num <= 0 || den <= 0) {
+                            *fps_n = 30;   /* default to 30 fps */
+                            *fps_d = 1;
+                        } else {
+                            *fps_n = num;
+                            *fps_d = den;
+                        }
+                        break;
+                    }
+                    case 'A':              /* sample aspect ration */
+                        break;
+                    case 'X':              /* metadata */
+                        break;
+                    default:
+                        break;
+                }
+            }
+            j++;
+        }
+        ret = true;
+        m_Y4MHeaderOffset = j + 1;
+beach:
+        return ret;
+    }
+
+    uint32_t skipY4MFrameHeader (uint64_t offset)
+    {
+        uint32_t i;
+        int b;
+        uint8_t header[Y4M_MAX_BUFF_SIZE];
+        size_t s;
+
+        memset (header, 0, Y4M_MAX_BUFF_SIZE);
+#if !defined(VK_USE_PLATFORM_WIN32_KHR)
+        fseeko(m_fileHandle, static_cast<off_t>(offset), SEEK_SET);
+#else
+        fseek(m_fileHandle, static_cast<off_t>(offset), SEEK_SET);
+#endif
+        s = fread (header, 1, 5, m_fileHandle);
+        if (s < 5) {
+            return 0;
+        }
+
+        if (memcmp (header, "FRAME", 5) != 0) {
+            return 0;
+        }
+
+        for (i = 5; i < Y4M_MAX_BUFF_SIZE - 1; i++) {
+            b = fgetc (m_fileHandle);
+            if (b == EOF) {
+                return 0;
+            }
+            if (b == 0xa) {
+                break;
+            }
+            header[i] = (char)b;
+        }
+
+        return i + 1;
     }
 
 private:
@@ -251,6 +419,7 @@ private:
 private:
     char  m_fileName[256];
     FILE* m_fileHandle;
+    uint64_t m_Y4MHeaderOffset;
     mio::basic_mmap<mio::access_mode::read, uint8_t> m_memMapedFile;
 };
 
@@ -341,6 +510,110 @@ private:
     mio::basic_mmap<mio::access_mode::write, uint8_t> m_memMapedFile;
 };
 
+
+class EncoderQpMapFileHandler
+{
+public:
+    EncoderQpMapFileHandler()
+    : m_fileName{},
+      m_fileHandle(),
+      m_memMapedFile()
+    {
+
+    }
+
+    ~EncoderQpMapFileHandler()
+    {
+        Destroy();
+    }
+
+    void Destroy()
+    {
+        m_memMapedFile.unmap();
+
+        if (m_fileHandle != nullptr) {
+            if(fclose(m_fileHandle)) {
+                fprintf(stderr, "Failed to close input file %s", m_fileName);
+            }
+
+            m_fileHandle = nullptr;
+        }
+    }
+
+    bool HasFileName()
+    {
+        return m_fileName[0] != 0;
+    }
+
+    size_t SetFileName(const char* inputFileName)
+    {
+        Destroy();
+        strcpy(m_fileName, inputFileName);
+        return OpenFile();
+    }
+
+    bool HandleIsValid() const {
+        return (m_fileHandle != nullptr);
+    }
+
+    bool FileIsValid() const {
+        if (HandleIsValid()) {
+            return true;
+        }
+        return (m_fileHandle != nullptr);
+    }
+
+    FILE* GetFileHandle() const {
+        assert(m_fileHandle != nullptr);
+        return m_fileHandle;
+    }
+
+    const uint8_t* GetMappedPtr(uint64_t fileOffset)
+    {
+        assert(m_memMapedFile.is_mapped());
+
+        const uint64_t mappedLength = (uint64_t)m_memMapedFile.mapped_length();
+        if (mappedLength < fileOffset) {
+            printf("File overflow at fileOffset %llu\n",  (unsigned long long int)fileOffset);
+            assert(!"Input file overflow");
+            return nullptr;
+        }
+        return m_memMapedFile.data() + fileOffset;
+    }
+
+private:
+    size_t OpenFile()
+    {
+        m_fileHandle = fopen(m_fileName, "rb");
+        if (m_fileHandle == nullptr) {
+            fprintf(stderr, "Failed to open input file %s", m_fileName);
+            return 0;
+        }
+
+        std::error_code error;
+        m_memMapedFile.map(m_fileName, 0, mio::map_entire_file, error);
+        if (error) {
+            fprintf(stderr, "Failed to map the input file %s", m_fileName);
+            const auto& errmsg = error.message();
+            std::printf("error mapping file: %s, exiting...\n", errmsg.c_str());
+            return error.value();
+        }
+
+        printf("Input file size is: %zd\n", m_memMapedFile.length());
+
+        return m_memMapedFile.length();
+    }
+
+    size_t GetFileSize() const {
+        return m_memMapedFile.length();
+    }
+
+private:
+    char  m_fileName[256];
+    FILE* m_fileHandle;
+    mio::basic_mmap<mio::access_mode::read, uint8_t> m_memMapedFile;
+};
+
 struct EncoderConfig : public VkVideoRefCountBase {
 
     enum { DEFAULT_NUM_INPUT_IMAGES = 16 };
@@ -350,6 +623,7 @@ struct EncoderConfig : public VkVideoRefCountBase {
     enum { DEFAULT_TEMPORAL_LAYER_COUNT = 1 };
     enum { DEFAULT_NUM_SLICES_PER_PICTURE = 4 };
     enum { DEFAULT_MAX_NUM_REF_FRAMES = 16 };
+    enum QpMapMode { DELTA_QP_MAP, EMPHASIS_MAP };
 
 private:
     std::atomic<int32_t> refCount;
@@ -383,6 +657,7 @@ public:
     VkVideoCoreProfile videoCoreProfile;
     VkVideoCapabilitiesKHR videoCapabilities;
     VkVideoEncodeCapabilitiesKHR videoEncodeCapabilities;
+    VkVideoEncodeQuantizationMapCapabilitiesKHR quantizationMapCapabilities;
     VkVideoEncodeRateControlModeFlagBitsKHR rateControlMode;
     uint32_t averageBitrate; // kbits/sec
     uint32_t maxBitrate;     // kbits/sec
@@ -393,6 +668,9 @@ public:
     int32_t  minQp;
     int32_t  maxQp;
     ConstQpSettings constQp;
+
+    uint32_t enableQpMap : 1;
+    QpMapMode qpMapMode;
 
     VkVideoGopStructure gopStructure;
     int8_t dpbCount;
@@ -425,6 +703,7 @@ public:
 
     EncoderInputFileHandler inputFileHandler;
     EncoderOutputFileHandler outputFileHandler;
+    EncoderQpMapFileHandler qpMapFileHandler;
     uint32_t validate : 1;
     uint32_t validateVerbose : 1;
     uint32_t verbose : 1;
@@ -466,6 +745,7 @@ public:
     , videoCoreProfile(codec, encodeChromaSubsampling, encodeBitDepthLuma, encodeBitDepthChroma)
     , videoCapabilities()
     , videoEncodeCapabilities()
+    , quantizationMapCapabilities()
     , rateControlMode(VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DEFAULT_KHR)
     , averageBitrate()
     , maxBitrate()
@@ -475,6 +755,8 @@ public:
     , minQp(-1)
     , maxQp(-1)
     , constQp()
+    , enableQpMap(false)
+    , qpMapMode(DELTA_QP_MAP)
     , gopStructure(DEFAULT_GOP_FRAME_COUNT,
                    DEFAULT_GOP_IDR_PERIOD,
                    DEFAULT_CONSECUTIVE_B_FRAME_COUNT,
@@ -584,6 +866,10 @@ public:
         return nullptr;
     }
 
+    virtual EncoderConfigAV1* GetEncoderConfigAV1() {
+        return nullptr;
+    }
+
     // Factory Function
     static VkResult CreateCodecConfig(int argc, char *argv[], VkSharedBaseObj<EncoderConfig>& encoderConfig);
 
@@ -626,5 +912,7 @@ public:
 VkResult CreateCodecConfigH264(int argc, char *argv[], VkSharedBaseObj<EncoderConfig>& encoderConfig);
 // Create codec configuration for H.265 encoder
 VkResult CreateCodecConfigH265(int argc, char *argv[], VkSharedBaseObj<EncoderConfig>& encoderConfig);
+// Create codec configuration for AV1 encoder
+VkResult CreateCodecConfigAV1(int artc, char *argv[], VkSharedBaseObj<EncoderConfig>& encoderConfig);
 
 #endif /* VKVIDEOENCODER_VKENCODERCONFIG_H_ */
