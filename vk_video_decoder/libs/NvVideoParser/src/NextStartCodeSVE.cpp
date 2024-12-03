@@ -34,7 +34,7 @@ size_t VulkanVideoDecoder::next_start_code<SIMD_ISA::SVE>(const uint8_t *pdatain
             }
             isArrayFilled = 1;
         }
-        svuint8_t v0n = svld1_u8(pred, data0n);
+        svuint8_t v0n = svld1_u8(svptrue_b8(), data0n);
 
         const svbool_t vext15_mask = svcmpge_n_u8(svptrue_b8(), v0n, lanes-1);
         const svbool_t vext14_mask = svcmpge_n_u8(svptrue_b8(), v0n, lanes-2);
@@ -65,8 +65,12 @@ size_t VulkanVideoDecoder::next_start_code<SIMD_ISA::SVE>(const uint8_t *pdatain
             // hotspot end
         }
     }
-    m_BitBfr = (pdatain[datasize-2] << 8) | pdatain[datasize-1];
-    found_start_code = ((m_BitBfr & 0x00ffffff) == 1);
+    // a very rare case:
+    if (datasize >= 2) {
+        m_BitBfr = pdatain[datasize-2];
+    }
+    m_BitBfr = (m_BitBfr << 8) | pdatain[datasize >= 1 ? datasize - 1 : 0];
+    found_start_code = false;
     return datasize;
 }
 #undef SVE_REGISTER_MAX_BYTES
