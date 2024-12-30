@@ -175,7 +175,7 @@ int main(int argc, const char **argv) {
                                                         VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR);
 
     VkVideoCodecOperationFlagsKHR videoCodecs = videoDecodeCodecs |
-                                        (programConfig.enableVideoEncoder ? videoEncodeCodecs : VK_VIDEO_CODEC_OPERATION_NONE_KHR);
+                                        (programConfig.enableVideoEncoder ? videoEncodeCodecs : (VkVideoCodecOperationFlagsKHR) VK_VIDEO_CODEC_OPERATION_NONE_KHR);
 
 
     if (supportsDisplay && !programConfig.noPresent) {
@@ -228,9 +228,10 @@ int main(int argc, const char **argv) {
     } else {
 
         result = vkDevCtxt.InitPhysicalDevice(programConfig.deviceId, programConfig.GetDeviceUUID(),
-                                              (VK_QUEUE_TRANSFER_BIT | requestVideoDecodeQueueMask  |
-                                              requestVideoComputeQueueMask |
-                                              requestVideoEncodeQueueMask),
+                                              (VK_QUEUE_TRANSFER_BIT        |
+                                               requestVideoDecodeQueueMask  |
+                                               requestVideoComputeQueueMask |
+                                               requestVideoEncodeQueueMask),
                                               nullptr,
                                               requestVideoDecodeQueueMask);
         if (result != VK_SUCCESS) {

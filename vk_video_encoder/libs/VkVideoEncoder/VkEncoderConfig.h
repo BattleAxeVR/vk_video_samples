@@ -31,6 +31,7 @@
 #include "VkVideoEncoder/VkVideoGopStructure.h"
 #include "VkVideoCore/VkVideoCoreProfile.h"
 #include "VkVideoCore/VulkanVideoCapabilities.h"
+#include "VkCodecUtils/VulkanFilterYuvCompute.h"
 
 struct EncoderConfigH264;
 struct EncoderConfigH265;
@@ -183,11 +184,12 @@ public:
 class EncoderInputFileHandler
 {
 public:
-    EncoderInputFileHandler()
-    : m_fileName{},
-      m_fileHandle(),
-      m_Y4MHeaderOffset(0),
-      m_memMapedFile()
+    EncoderInputFileHandler(bool verbose = false)
+    : m_fileName{}
+    , m_fileHandle()
+    , m_Y4MHeaderOffset(0)
+    , m_memMapedFile()
+    , m_verbose(verbose)
     {
 
     }
@@ -390,7 +392,7 @@ beach:
     }
 
     uint32_t GetFrameCount(uint32_t width, uint32_t height, uint8_t bpp, VkVideoChromaSubsamplingFlagBitsKHR chromaSubsampling) {
-        uint8_t nBytes = (uint8_t)std::ceil ( bpp / 8);
+        uint8_t nBytes = (bpp + 7) / 8;
         double samplingFactor = 1.5;
         switch (chromaSubsampling)
         {
@@ -426,7 +428,9 @@ private:
             return error.value();
         }
 
-        printf("Input file size is: %zd\n", m_memMapedFile.length());
+        if (m_verbose) {
+            printf("Input file size is: %zd\n", m_memMapedFile.length());
+        }
 
         return m_memMapedFile.length();
     }
@@ -440,6 +444,7 @@ private:
     FILE* m_fileHandle;
     uint64_t m_Y4MHeaderOffset;
     mio::basic_mmap<mio::access_mode::read, uint8_t> m_memMapedFile;
+    uint32_t m_verbose : 1;
 };
 
 class EncoderOutputFileHandler
@@ -533,10 +538,11 @@ private:
 class EncoderQpMapFileHandler
 {
 public:
-    EncoderQpMapFileHandler()
-    : m_fileName{},
-      m_fileHandle(),
-      m_memMapedFile()
+    EncoderQpMapFileHandler(bool verbose = false)
+    : m_fileName{}
+    , m_fileHandle()
+    , m_memMapedFile()
+    , m_verbose(verbose)
     {
 
     }
@@ -618,7 +624,9 @@ private:
             return error.value();
         }
 
-        printf("Input file size is: %zd\n", m_memMapedFile.length());
+        if (m_verbose) {
+            printf("Input file size is: %zd\n", m_memMapedFile.length());
+        }
 
         return m_memMapedFile.length();
     }
@@ -631,6 +639,7 @@ private:
     char  m_fileName[256];
     FILE* m_fileHandle;
     mio::basic_mmap<mio::access_mode::read, uint8_t> m_memMapedFile;
+    uint32_t m_verbose : 1;
 };
 
 struct EncoderConfig : public VkVideoRefCountBase {
@@ -723,6 +732,9 @@ public:
     EncoderInputFileHandler inputFileHandler;
     EncoderOutputFileHandler outputFileHandler;
     EncoderQpMapFileHandler qpMapFileHandler;
+
+    VulkanFilterYuvCompute::FilterType filterType;
+
     uint32_t validate : 1;
     uint32_t validateVerbose : 1;
     uint32_t verbose : 1;
@@ -733,6 +745,7 @@ public:
     uint32_t enableVideoDecoder : 1;
     uint32_t enableHwLoadBalancing : 1;
     uint32_t selectVideoWithComputeQueue : 1;
+    uint32_t enablePreprocessComputeFilter : 1;
     uint32_t enableOutOfOrderRecording : 1; // Testing only - don't use for production!
 
     EncoderConfig()
@@ -807,16 +820,18 @@ public:
     , max_dec_frame_buffering()
     , chroma_sample_loc_type()
     , inputFileHandler()
+    , filterType(VulkanFilterYuvCompute::YCBCRCOPY)
     , validate(false)
     , validateVerbose(false)
     , verbose(false)
     , verboseFrameStruct(false)
-    , verboseMsg(true)
+    , verboseMsg(false)
     , enableFramePresent(false)
     , enableFrameDirectModePresent(false)
     , enableVideoDecoder(false)
     , enableHwLoadBalancing(false)
     , selectVideoWithComputeQueue(false)
+    , enablePreprocessComputeFilter(false)
     , enableOutOfOrderRecording(false)
     { }
 

@@ -45,9 +45,11 @@ public:
     {
         m_encoder->WaitForThreadsToComplete();
 
-        std::cout << "Done processing " << m_lastFrameIndex << " input frames!" << std::endl
-                  << "Encoded file's location is at " << m_encoderConfig->outputFileHandler.GetFileName()
-                  << std::endl;
+        if (m_encoderConfig->verbose) {
+            std::cout << "Done processing " << m_lastFrameIndex << " input frames!" << std::endl
+                      << "Encoded file's location is at " << m_encoderConfig->outputFileHandler.GetFileName()
+                      << std::endl;
+        }
 
         m_encoder       = nullptr;
         m_encoderConfig = nullptr;
@@ -151,9 +153,17 @@ VkResult VulkanVideoEncoderImpl::Initialize(VkVideoCodecOperationFlagBitsKHR vid
         }
     }
 
+    VkQueueFlags requestVideoComputeQueueMask = 0;
+    if (m_encoderConfig->enablePreprocessComputeFilter == VK_TRUE) {
+        requestVideoComputeQueueMask = VK_QUEUE_COMPUTE_BIT;
+    }
+
     // No display presentation and no decoder - just the encoder
     result = m_vkDevCtxt.InitPhysicalDevice(m_encoderConfig->deviceId, m_encoderConfig->GetDeviceUUID(),
-                                            (requestVideoDecodeQueueMask | requestVideoEncodeQueueMask | VK_QUEUE_TRANSFER_BIT),
+                                            ( requestVideoComputeQueueMask |
+                                              requestVideoDecodeQueueMask  |
+                                              requestVideoEncodeQueueMask  |
+                                              VK_QUEUE_TRANSFER_BIT),
                                             nullptr,
                                             requestVideoDecodeQueueMask,
                                             (VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR |
@@ -194,7 +204,8 @@ VkResult VulkanVideoEncoderImpl::Initialize(VkVideoCodecOperationFlagBitsKHR vid
                                             ((m_vkDevCtxt.GetVideoEncodeQueueFlag() & VK_QUEUE_TRANSFER_BIT) == 0), //  createTransferQueue
                                             false, // createGraphicsQueue
                                             false, // createDisplayQueue
-                                            (m_encoderConfig->selectVideoWithComputeQueue == 1)  // createComputeQueue
+                                            ((m_encoderConfig->selectVideoWithComputeQueue == 1) ||  // createComputeQueue
+                                             (m_encoderConfig->enablePreprocessComputeFilter == VK_TRUE))
                                           );
     if (result != VK_SUCCESS) {
 

@@ -66,32 +66,32 @@ const uint8_t* VkVideoEncoder::setPlaneOffset(const uint8_t* pFrameData, size_t 
     return buf;
 }
 
-// 1. Load current input frame from file
-// 2. Convert yuv image to nv12 (TODO: switch to Vulkan compute next, instead of using the CPU for that)
-// 3. Copy the nv12 input linear image to the optimal input image
-// 4. Load qp map from file
-// 5. Copy linear image to the optimal image
-VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
+VkResult VkVideoEncoder::LoadNextQpMapFrameFromFile(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
 {
-    assert(encodeFrameInfo);
+    if ((m_encoderConfig->enableQpMap == VK_FALSE) || (!m_encoderConfig->qpMapFileHandler.HandleIsValid()))  {
+        return VK_SUCCESS;
+    }
 
-    encodeFrameInfo->frameInputOrderNum = m_inputFrameNum++;
-    encodeFrameInfo->lastFrame = !(encodeFrameInfo->frameInputOrderNum < (m_encoderConfig->numFrames - 1));
+    VkSharedBaseObj<VulkanVideoImagePoolNode>& srcQpMapResource = ((m_qpMapTiling != VK_IMAGE_TILING_LINEAR)) ?
+                                                                    encodeFrameInfo->srcQpMapStagingResource :
+                                                                    encodeFrameInfo->srcQpMapImageResource;
 
-    if (m_encoderConfig->enableQpMap) {
+    VkSharedBaseObj<VulkanVideoImagePool>& qpMapImagePool = ((m_qpMapTiling != VK_IMAGE_TILING_LINEAR)) ?
+                                                               m_linearQpMapImagePool : m_qpMapImagePool;
 
-        if (encodeFrameInfo->srcQpMapStagingImageView == nullptr) {
-            bool success = m_linearQpMapImagePool->GetAvailableImage(encodeFrameInfo->srcQpMapStagingImageView,
-                                                                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            assert(success);
-            if (!success) {
-                return VK_ERROR_INITIALIZATION_FAILED;
-            }
-            assert(encodeFrameInfo->srcQpMapStagingImageView != nullptr);
+    // If srcQpMapStagingImageView is valid at this point, it means that the client had provided
+    // the QpMap image.
+    if (srcQpMapResource == nullptr) {
+        bool success = qpMapImagePool->GetAvailableImage(srcQpMapResource,
+                                                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        assert(success);
+        if (!success) {
+            return VK_ERROR_INITIALIZATION_FAILED;
         }
+        assert(srcQpMapResource != nullptr);
 
         VkSharedBaseObj<VkImageResourceView> linearQpMapImageView;
-        encodeFrameInfo->srcQpMapStagingImageView->GetImageView(linearQpMapImageView);
+        srcQpMapResource->GetImageView(linearQpMapImageView);
 
         const VkSharedBaseObj<VkImageResource>& dstQpMapImageResource = linearQpMapImageView->GetImageResource();
         VkSharedBaseObj<VulkanDeviceMemoryImpl> srcQpMapImageDeviceMemory(dstQpMapImageResource->GetMemory());
@@ -114,6 +114,29 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
         for (uint32_t j = 0; j < qpMapHeight; j++) {
             memcpy(writeQpMapImagePtr + (dstQpMapSubresourceLayout[0].offset + j * dstQpMapSubresourceLayout[0].rowPitch),
                    pQpMapData + j * inputQpMapWidth * formatSize, qpMapWidth * formatSize);
+        }
+    }
+
+    return VK_SUCCESS;
+}
+
+// 1. Load current input frame from file
+// 2. Convert yuv image to nv12 (TODO: switch to Vulkan compute next, instead of using the CPU for that)
+// 3. Copy the nv12 input linear image to the optimal input image
+// 4. Load qp map from file
+// 5. Copy linear image to the optimal image
+VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
+{
+    assert(encodeFrameInfo);
+
+    encodeFrameInfo->frameInputOrderNum = m_inputFrameNum++;
+    encodeFrameInfo->lastFrame = !(encodeFrameInfo->frameInputOrderNum < (m_encoderConfig->numFrames - 1));
+
+    if ((m_encoderConfig->enableQpMap == VK_TRUE) && m_encoderConfig->qpMapFileHandler.HandleIsValid()) {
+
+        VkResult result = LoadNextQpMapFrameFromFile(encodeFrameInfo);
+        if (result != VK_SUCCESS) {
+            return result;
         }
     }
 
@@ -199,23 +222,28 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
     return VK_ERROR_INITIALIZATION_FAILED;
 }
 
-VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
+VkResult VkVideoEncoder::StageInputFrameQpMap(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
+                                              VkCommandBuffer cmdBuf)
 {
-    assert(encodeFrameInfo);
 
-    VkResult result;
+    if (m_encoderConfig->enableQpMap == VK_FALSE) {
+        return VK_SUCCESS;
+    }
 
-    if (m_encoderConfig->enableQpMap) {
-        if (encodeFrameInfo->srcQpMapImageResource == nullptr) {
-            bool success = m_qpMapImagePool->GetAvailableImage(encodeFrameInfo->srcQpMapImageResource,
-                                                               VK_IMAGE_LAYOUT_VIDEO_ENCODE_QUANTIZATION_MAP_KHR);
-            assert(success);
-            assert(encodeFrameInfo->srcQpMapImageResource != nullptr);
-            if (!success || encodeFrameInfo->srcQpMapImageResource == nullptr) {
-                return VK_ERROR_INITIALIZATION_FAILED;
-            }
+    const bool useDedicatedCommandBuf = (cmdBuf == VK_NULL_HANDLE);
+
+    if (encodeFrameInfo->srcQpMapImageResource == nullptr) {
+        bool success = m_qpMapImagePool->GetAvailableImage(encodeFrameInfo->srcQpMapImageResource,
+                                                           VK_IMAGE_LAYOUT_VIDEO_ENCODE_QUANTIZATION_MAP_KHR);
+        assert(success);
+        assert(encodeFrameInfo->srcQpMapImageResource != nullptr);
+        if (!success || encodeFrameInfo->srcQpMapImageResource == nullptr) {
+            return VK_ERROR_INITIALIZATION_FAILED;
         }
+    }
 
+    if (useDedicatedCommandBuf) {
+        assert(m_inputCommandBufferPool != nullptr);
         m_inputCommandBufferPool->GetAvailablePoolNode(encodeFrameInfo->qpMapCmdBuffer);
         assert(encodeFrameInfo->qpMapCmdBuffer != nullptr);
 
@@ -225,35 +253,59 @@ VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
         // Begin command buffer
         VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr };
         beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        VkCommandBuffer cmdBuf = encodeFrameInfo->qpMapCmdBuffer->BeginCommandBufferRecording(beginInfo);
-
-        VkSharedBaseObj<VkImageResourceView> linearQpMapImageView;
-        encodeFrameInfo->srcQpMapStagingImageView->GetImageView(linearQpMapImageView);
-
-        VkSharedBaseObj<VkImageResourceView> srcQpMapImageView;
-        encodeFrameInfo->srcQpMapImageResource->GetImageView(srcQpMapImageView);
-
-        VkImageLayout linearQpMapImgNewLayout = TransitionImageLayout(cmdBuf, linearQpMapImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        VkImageLayout srcQpMapImgNewLayout = TransitionImageLayout(cmdBuf, srcQpMapImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        (void)linearQpMapImgNewLayout;
-        (void)srcQpMapImgNewLayout;
-
-        VkExtent2D copyImageExtent {
-            (std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width) + m_qpMapTexelSize.width - 1) / m_qpMapTexelSize.width,
-            (std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height) + m_qpMapTexelSize.height - 1) / m_qpMapTexelSize.height
-        };
-
-        CopyLinearToLinearImage(cmdBuf, linearQpMapImageView, srcQpMapImageView, copyImageExtent);
-
-        result = encodeFrameInfo->qpMapCmdBuffer->EndCommandBufferRecording(cmdBuf);
-
-        // Now submit the staged input to the queue
-        SubmitStagedQpMap(encodeFrameInfo);
+        cmdBuf = encodeFrameInfo->qpMapCmdBuffer->BeginCommandBufferRecording(beginInfo);
     }
 
+    assert(cmdBuf != VK_NULL_HANDLE);
+
+    VkSharedBaseObj<VkImageResourceView> linearQpMapImageView;
+    encodeFrameInfo->srcQpMapStagingResource->GetImageView(linearQpMapImageView);
+
+    VkSharedBaseObj<VkImageResourceView> srcQpMapImageView;
+    encodeFrameInfo->srcQpMapImageResource->GetImageView(srcQpMapImageView);
+
+    VkImageLayout linearQpMapImgNewLayout = TransitionImageLayout(cmdBuf, linearQpMapImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    VkImageLayout srcQpMapImgNewLayout = TransitionImageLayout(cmdBuf, srcQpMapImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    (void)linearQpMapImgNewLayout;
+    (void)srcQpMapImgNewLayout;
+
+    VkExtent2D copyImageExtent {
+        (std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width) + m_qpMapTexelSize.width - 1) / m_qpMapTexelSize.width,
+        (std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height) + m_qpMapTexelSize.height - 1) / m_qpMapTexelSize.height
+    };
+
+    CopyLinearToLinearImage(cmdBuf, linearQpMapImageView, srcQpMapImageView, copyImageExtent);
+
+    if (useDedicatedCommandBuf) {
+        VkResult result = VK_SUCCESS;
+        result = encodeFrameInfo->qpMapCmdBuffer->EndCommandBufferRecording(cmdBuf);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+
+        // Now submit the staged input to the queue
+        return SubmitStagedQpMap(encodeFrameInfo);
+    }
+
+    return VK_SUCCESS;
+}
+
+VkResult VkVideoEncoder::EncodeFrameCommon(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
+{
+    encodeFrameInfo->constQp = m_encoderConfig->constQp;
+
+    // and encode the input frame with the encoder next
+    return EncodeFrame(encodeFrameInfo);
+}
+
+VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
+{
+    assert(encodeFrameInfo);
+
     if (encodeFrameInfo->srcEncodeImageResource == nullptr) {
+
         bool success = m_inputImagePool->GetAvailableImage(encodeFrameInfo->srcEncodeImageResource,
-                                                                 VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR);
+                                                           VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR);
         assert(success);
         assert(encodeFrameInfo->srcEncodeImageResource != nullptr);
         if (!success || encodeFrameInfo->srcEncodeImageResource == nullptr) {
@@ -278,29 +330,51 @@ VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
     VkSharedBaseObj<VkImageResourceView> srcEncodeImageView;
     encodeFrameInfo->srcEncodeImageResource->GetImageView(srcEncodeImageView);
 
-    VkImageLayout linearImgNewLayout = TransitionImageLayout(cmdBuf, linearInputImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-    VkImageLayout srcImgNewLayout = TransitionImageLayout(cmdBuf, srcEncodeImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    (void)linearImgNewLayout;
-    (void)srcImgNewLayout;
+    VkResult result;
+    if (m_inputComputeFilter == nullptr) {
+        VkImageLayout linearImgNewLayout = TransitionImageLayout(cmdBuf, linearInputImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkImageLayout srcImgNewLayout = TransitionImageLayout(cmdBuf, srcEncodeImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        (void)linearImgNewLayout;
+        (void)srcImgNewLayout;
 
-    VkExtent2D copyImageExtent {
-        std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),
-        std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height)
-    };
+        VkExtent2D copyImageExtent {
+            std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),
+            std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height)
+        };
 
-    CopyLinearToOptimalImage(cmdBuf, linearInputImageView, srcEncodeImageView, copyImageExtent);
+        CopyLinearToOptimalImage(cmdBuf, linearInputImageView, srcEncodeImageView, copyImageExtent);
+
+    } else {
+
+        result = m_inputComputeFilter->RecordCommandBuffer(cmdBuf,
+                                                           linearInputImageView,
+                                                           encodeFrameInfo->srcStagingImageView->GetPictureResourceInfo(),
+                                                           srcEncodeImageView,
+                                                           encodeFrameInfo->srcEncodeImageResource->GetPictureResourceInfo(),
+                                                           encodeFrameInfo->inputCmdBuffer->GetNodePoolIndex());
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+    }
+
+    // Stage QPMap if it needs staging. Reuse the same command buffer used for staging of the input image
+    if (m_encoderConfig->enableQpMap && (m_qpMapTiling != VK_IMAGE_TILING_LINEAR)) {
+        result = StageInputFrameQpMap(encodeFrameInfo, cmdBuf);
+        if (result != VK_SUCCESS) {
+            return result;
+        }
+    }
 
     result = encodeFrameInfo->inputCmdBuffer->EndCommandBufferRecording(cmdBuf);
+    if (result != VK_SUCCESS) {
+        return result;
+    }
 
     // Now submit the staged input to the queue
     SubmitStagedInputFrame(encodeFrameInfo);
 
-    encodeFrameInfo->constQp = m_encoderConfig->constQp;
-
     // and encode the input frame with the encoder next
-    EncodeFrame(encodeFrameInfo);
-
-    return result;
+    return EncodeFrameCommon(encodeFrameInfo);
 }
 
 VkResult VkVideoEncoder::SubmitStagedQpMap(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
@@ -357,8 +431,11 @@ VkResult VkVideoEncoder::SubmitStagedInputFrame(VkSharedBaseObj<VkVideoEncodeFra
 
     VkFence queueCompleteFence = encodeFrameInfo->inputCmdBuffer->GetFence();
     assert(VK_NOT_READY == m_vkDevCtx->GetFenceStatus(*m_vkDevCtx, queueCompleteFence));
-    VkResult result = m_vkDevCtx->MultiThreadedQueueSubmit(((m_vkDevCtx->GetVideoEncodeQueueFlag() & VK_QUEUE_TRANSFER_BIT) != 0) ?
-                                                               VulkanDeviceContext::ENCODE : VulkanDeviceContext::TRANSFER,
+    const VulkanDeviceContext::QueueFamilySubmitType submitType =
+            (m_inputComputeFilter != nullptr) ? VulkanDeviceContext::COMPUTE :
+                    (((m_vkDevCtx->GetVideoEncodeQueueFlag() & VK_QUEUE_TRANSFER_BIT) != 0) ?
+                            VulkanDeviceContext::ENCODE : VulkanDeviceContext::TRANSFER);
+    VkResult result = m_vkDevCtx->MultiThreadedQueueSubmit(submitType,
                                                            0, 1, &submitInfo,
                                                            queueCompleteFence);
 
@@ -519,19 +596,24 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     // gopStructure.Init() should be called after  encoderConfig->InitDeviceCapabilities().
     m_encoderConfig->gopStructure.Init(m_encoderConfig->numFrames);
     if (encoderConfig->GetMaxBFrameCount() < m_encoderConfig->gopStructure.GetConsecutiveBFrameCount()) {
-        std::cout << "Max consecutive B frames: " << (uint32_t)encoderConfig->GetMaxBFrameCount() << " lower than the configured one: " << (uint32_t)m_encoderConfig->gopStructure.GetConsecutiveBFrameCount() << std::endl;
-        std::cout << "Fallback to the max value: " << (uint32_t)m_encoderConfig->gopStructure.GetConsecutiveBFrameCount() << std::endl;
+        if (m_encoderConfig->verbose) {
+            std::cout << "Max consecutive B frames: " << (uint32_t)encoderConfig->GetMaxBFrameCount() << " lower than the configured one: " << (uint32_t)m_encoderConfig->gopStructure.GetConsecutiveBFrameCount() << std::endl;
+            std::cout << "Fallback to the max value: " << (uint32_t)m_encoderConfig->gopStructure.GetConsecutiveBFrameCount() << std::endl;
+        }
         m_encoderConfig->gopStructure.SetConsecutiveBFrameCount(encoderConfig->GetMaxBFrameCount());
     }
-    std::cout << std::endl << "GOP frame count: " << (uint32_t)m_encoderConfig->gopStructure.GetGopFrameCount();
-    std::cout << ", IDR period: " << (uint32_t)m_encoderConfig->gopStructure.GetIdrPeriod();
-    std::cout << ", Consecutive B frames: " << (uint32_t)m_encoderConfig->gopStructure.GetConsecutiveBFrameCount();
-    std::cout << std::endl;
-    const uint64_t maxFramesToDump = std::min<uint32_t>(m_encoderConfig->numFrames, m_encoderConfig->gopStructure.GetGopFrameCount() + 19);
-    m_encoderConfig->gopStructure.PrintGopStructure(maxFramesToDump);
+    if (m_encoderConfig->verbose) {
+        std::cout << std::endl << "GOP frame count: " << (uint32_t)m_encoderConfig->gopStructure.GetGopFrameCount();
+        std::cout << ", IDR period: " << (uint32_t)m_encoderConfig->gopStructure.GetIdrPeriod();
+        std::cout << ", Consecutive B frames: " << (uint32_t)m_encoderConfig->gopStructure.GetConsecutiveBFrameCount();
+        std::cout << std::endl;
 
-    if (m_encoderConfig->verboseFrameStruct) {
-        m_encoderConfig->gopStructure.DumpFramesGopStructure(0, maxFramesToDump);
+        const uint64_t maxFramesToDump = std::min<uint32_t>(m_encoderConfig->numFrames, m_encoderConfig->gopStructure.GetGopFrameCount() + 19);
+        m_encoderConfig->gopStructure.PrintGopStructure(maxFramesToDump);
+
+        if (m_encoderConfig->verboseFrameStruct) {
+            m_encoderConfig->gopStructure.DumpFramesGopStructure(0, maxFramesToDump);
+        }
     }
 
     if (m_encoderConfig->enableOutOfOrderRecording) {
@@ -719,43 +801,41 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         return result;
     }
 
-    const VkImageUsageFlags qpMapImageUsage = (((encoderConfig->qpMapMode == EncoderConfig::DELTA_QP_MAP) ?
-                                                VK_IMAGE_USAGE_VIDEO_ENCODE_QUANTIZATION_DELTA_MAP_BIT_KHR :
-                                                VK_IMAGE_USAGE_VIDEO_ENCODE_EMPHASIS_MAP_BIT_KHR) |
-                                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                               VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-
     if (encoderConfig->enableQpMap) {
-        result =  VulkanVideoImagePool::Create(m_vkDevCtx, m_linearQpMapImagePool);
-        if(result != VK_SUCCESS) {
-            fprintf(stderr, "\nInitEncoder Error: Failed to create linearQpMapImagePool.\n");
-            return result;
+
+        if (m_qpMapTiling != VK_IMAGE_TILING_LINEAR) {
+
+            // If the linear tiling is not supported, we need to stage the image
+            result =  VulkanVideoImagePool::Create(m_vkDevCtx, m_linearQpMapImagePool);
+            if(result != VK_SUCCESS) {
+                fprintf(stderr, "\nInitEncoder Error: Failed to create linearQpMapImagePool.\n");
+                return result;
+            }
+
+            VkExtent2D linearQpMapImageExtent {
+                (std::max(m_maxCodedExtent.width,  encoderConfig->input.width) + m_qpMapTexelSize.width - 1) / m_qpMapTexelSize.width,
+                (std::max(m_maxCodedExtent.height, encoderConfig->input.height) + m_qpMapTexelSize.height - 1) / m_qpMapTexelSize.height
+            };
+
+            result = m_linearQpMapImagePool->Configure( m_vkDevCtx,
+                                                        encoderConfig->numInputImages,
+                                                        m_imageQpMapFormat,
+                                                        linearQpMapImageExtent,
+                                                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                                        m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(),
+                                                        ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT  |
+                                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                                          VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
+                                                        nullptr, // pVideoProfile
+                                                        false,   // useImageArray
+                                                        false,   // useImageViewArray
+                                                        true     // useLinear
+                                                      );
+            if(result != VK_SUCCESS) {
+                fprintf(stderr, "\nInitEncoder Error: Failed to Configure linearQpMapImagePool.\n");
+                return result;
+            }
         }
-
-        VkExtent2D linearQpMapImageExtent {
-            (std::max(m_maxCodedExtent.width,  encoderConfig->input.width) + m_qpMapTexelSize.width - 1) / m_qpMapTexelSize.width,
-            (std::max(m_maxCodedExtent.height, encoderConfig->input.height) + m_qpMapTexelSize.height - 1) / m_qpMapTexelSize.height
-        };
-
-        result = m_linearQpMapImagePool->Configure( m_vkDevCtx,
-                                                    encoderConfig->numInputImages,
-                                                    m_imageQpMapFormat,
-                                                    linearQpMapImageExtent,
-                                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                                                    m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(),
-                                                    ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT  |
-                                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                                                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
-                                                    nullptr, // pVideoProfile
-                                                    false,   // useImageArray
-                                                    false,   // useImageViewArray
-                                                    true     // useLinear
-                                                  );
-        if(result != VK_SUCCESS) {
-            fprintf(stderr, "\nInitEncoder Error: Failed to Configure linearQpMapImagePool.\n");
-            return result;
-        }
-
         result =  VulkanVideoImagePool::Create(m_vkDevCtx, m_qpMapImagePool);
         if(result != VK_SUCCESS) {
             fprintf(stderr, "\nInitEncoder Error: Failed to create inputImagePool.\n");
@@ -767,13 +847,23 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
             (std::max(m_maxCodedExtent.height, encoderConfig->videoCapabilities.minCodedExtent.height) + m_qpMapTexelSize.height - 1) / m_qpMapTexelSize.height
         };
 
+        const VkImageUsageFlags qpMapImageUsage = (((encoderConfig->qpMapMode == EncoderConfig::DELTA_QP_MAP) ?
+                                                    VK_IMAGE_USAGE_VIDEO_ENCODE_QUANTIZATION_DELTA_MAP_BIT_KHR :
+                                                    VK_IMAGE_USAGE_VIDEO_ENCODE_EMPHASIS_MAP_BIT_KHR) |
+                                                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
         result = m_qpMapImagePool->Configure( m_vkDevCtx,
                                               encoderConfig->numInputImages,
                                               m_imageQpMapFormat,
                                               qpMapExtent,
                                               qpMapImageUsage,
                                               m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(),
-                                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                              (m_qpMapTiling != VK_IMAGE_TILING_LINEAR) ?
+                                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT :
+                                                    ( VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT  |
+                                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                                                      VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
                                               encoderConfig->videoCoreProfile.GetProfile(), // pVideoProfile
                                               false,   // useImageArray
                                               false,   // useImageViewArray
@@ -845,23 +935,78 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         }
     }
 
-    result = VulkanCommandBufferPool::Create(m_vkDevCtx, m_inputCommandBufferPool);
-    if(result != VK_SUCCESS) {
-        fprintf(stderr, "\nInitEncoder Error: Failed to create m_inputCommandBufferPool.\n");
-        return result;
+    if (encoderConfig->enablePreprocessComputeFilter) {
+
+        const VkSamplerYcbcrRange ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_FULL; // FIXME
+        const VkSamplerYcbcrModelConversion ycbcrModelConversion = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020;   // FIXME
+        const YcbcrPrimariesConstants ycbcrPrimariesConstants = GetYcbcrPrimariesConstants(YcbcrBtStandardBt2020); // FIXME
+
+        const VkSamplerYcbcrConversionCreateInfo ycbcrConversionCreateInfo {
+                   VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO,
+                   nullptr,
+                   m_imageInFormat,
+                   ycbcrModelConversion,
+                   ycbcrRange,
+                   { VK_COMPONENT_SWIZZLE_IDENTITY,
+                     VK_COMPONENT_SWIZZLE_IDENTITY,
+                     VK_COMPONENT_SWIZZLE_IDENTITY,
+                     VK_COMPONENT_SWIZZLE_IDENTITY
+                   },
+                   VK_CHROMA_LOCATION_MIDPOINT, // FIXME
+                   VK_CHROMA_LOCATION_MIDPOINT, // FIXME
+                   VK_FILTER_LINEAR,
+                   false
+                   };
+
+        static const VkSamplerCreateInfo samplerInfo = {
+                   VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                   nullptr,
+                   0,
+                   VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                   VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                   // mipLodBias  anisotropyEnable  maxAnisotropy  compareEnable      compareOp         minLod  maxLod          borderColor
+                   // unnormalizedCoordinates
+                   0.0, false, 0.00, false, VK_COMPARE_OP_NEVER, 0.0, 16.0, VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE, false
+        };
+
+        result = VulkanFilterYuvCompute::Create(m_vkDevCtx,
+                                                m_vkDevCtx->GetComputeQueueFamilyIdx(),
+                                                0, // queueIndex
+                                                encoderConfig->filterType,
+                                                encoderConfig->numInputImages,
+                                                m_imageInFormat,  // in filter format (can be RGB)
+                                                m_imageInFormat,  // out filter - same as input for now.
+                                                &ycbcrConversionCreateInfo,
+                                                &ycbcrPrimariesConstants,
+                                                &samplerInfo,
+                                                m_inputComputeFilter);
     }
 
-    result = m_inputCommandBufferPool->Configure( m_vkDevCtx,
-                                                  (encoderConfig->enableQpMap) ? encoderConfig->numInputImages * 2 : encoderConfig->numInputImages, // numPoolNodes
-                                                  ((m_vkDevCtx->GetVideoEncodeQueueFlag() & VK_QUEUE_TRANSFER_BIT) != 0) ?
-                                                      m_vkDevCtx->GetVideoEncodeQueueFamilyIdx() :
-                                                      m_vkDevCtx->GetTransferQueueFamilyIdx(), // queueFamilyIndex
-                                                  false,    // createQueryPool - not needed for the input transfer
-                                                  nullptr,  // pVideoProfile   - not needed for the input transfer
-                                                  true,     // createSemaphores
-                                                  true      // createFences
-                                                 );
-    if(result != VK_SUCCESS) {
+    if ((result == VK_SUCCESS) && (m_inputComputeFilter != nullptr) ) {
+
+        m_inputCommandBufferPool = m_inputComputeFilter;
+
+    } else {
+
+        result = VulkanCommandBufferPool::Create(m_vkDevCtx, m_inputCommandBufferPool);
+        if(result != VK_SUCCESS) {
+            fprintf(stderr, "\nInitEncoder Error: Failed to create m_inputCommandBufferPool.\n");
+            return result;
+        }
+
+        result = m_inputCommandBufferPool->Configure( m_vkDevCtx,
+                                                      encoderConfig->numInputImages, // numPoolNodes
+                                                      ((m_vkDevCtx->GetVideoEncodeQueueFlag() & VK_QUEUE_TRANSFER_BIT) != 0) ?
+                                                          m_vkDevCtx->GetVideoEncodeQueueFamilyIdx() :
+                                                          m_vkDevCtx->GetTransferQueueFamilyIdx(), // queueFamilyIndex
+                                                      false,    // createQueryPool - not needed for the input transfer
+                                                      nullptr,  // pVideoProfile   - not needed for the input transfer
+                                                      true,     // createSemaphores
+                                                      true      // createFences
+                                                     );
+    }
+
+    if (result != VK_SUCCESS) {
         fprintf(stderr, "\nInitEncoder Error: Failed to Configure m_inputCommandBufferPool.\n");
         return result;
     }
@@ -1162,6 +1307,28 @@ VkResult VkVideoEncoder::CopyLinearToLinearImage(VkCommandBuffer& commandBuffer,
     }
 
     return VK_SUCCESS;
+}
+
+void VkVideoEncoder::ProcessQpMap(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
+{
+    if ((m_encoderConfig->enableQpMap == VK_FALSE) ||
+            ((encodeFrameInfo->srcQpMapImageResource == nullptr) &&
+                    encodeFrameInfo->srcQpMapStagingResource == nullptr )) {
+        return;
+    }
+
+    VkVideoPictureResourceInfoKHR* pSrcQpMapPictureResource = encodeFrameInfo->srcQpMapImageResource->GetPictureResourceInfo();
+    encodeFrameInfo->quantizationMapInfo.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_QUANTIZATION_MAP_INFO_KHR;
+    encodeFrameInfo->quantizationMapInfo.pNext = nullptr;
+    encodeFrameInfo->quantizationMapInfo.quantizationMap = pSrcQpMapPictureResource->imageViewBinding;
+    encodeFrameInfo->quantizationMapInfo.quantizationMapExtent = { (m_encoderConfig->encodeWidth + m_qpMapTexelSize.width - 1) / m_qpMapTexelSize.width,
+                                                                   (m_encoderConfig->encodeHeight + m_qpMapTexelSize.height - 1) / m_qpMapTexelSize.height };
+
+    encodeFrameInfo->encodeInfo.flags |= ((m_encoderConfig->qpMapMode == EncoderConfig::DELTA_QP_MAP) ?
+                                            VK_VIDEO_ENCODE_WITH_QUANTIZATION_DELTA_MAP_BIT_KHR :
+                                            VK_VIDEO_ENCODE_WITH_EMPHASIS_MAP_BIT_KHR);
+
+    vk::ChainNextVkStruct(encodeFrameInfo->encodeInfo, encodeFrameInfo->quantizationMapInfo);
 }
 
 VkResult VkVideoEncoder::HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
@@ -1532,6 +1699,7 @@ int32_t VkVideoEncoder::DeinitEncoder()
     m_inputImagePool       = nullptr;
     m_dpbImagePool         = nullptr;
 
+    m_inputComputeFilter      = nullptr;
     m_inputCommandBufferPool  = nullptr;
     m_encodeCommandBufferPool = nullptr;
 

@@ -96,7 +96,7 @@ public:
             , setupImageResource()
             , outputBitstreamBuffer()
             , dpbImageResources()
-            , srcQpMapStagingImageView()
+            , srcQpMapStagingResource()
             , srcQpMapImageResource()
             , qpMapCmdBuffer()
             , m_refCount(0)
@@ -152,7 +152,7 @@ public:
         VkSharedBaseObj<VulkanCommandBufferPool::PoolNode> encodeCmdBuffer;
         VkSharedBaseObj<VkVideoEncodeFrameInfo>            dependantFrames;
 
-        VkSharedBaseObj<VulkanVideoImagePoolNode>          srcQpMapStagingImageView;
+        VkSharedBaseObj<VulkanVideoImagePoolNode>          srcQpMapStagingResource;
         VkSharedBaseObj<VulkanVideoImagePoolNode>          srcQpMapImageResource;
         VkSharedBaseObj<VulkanCommandBufferPool::PoolNode> qpMapCmdBuffer;
 
@@ -515,9 +515,13 @@ public:
 
     virtual VkResult InitEncoderCodec(VkSharedBaseObj<EncoderConfig>& encoderConfig) = 0; // Must be implemented by the codec
     VkResult LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
+    VkResult LoadNextQpMapFrameFromFile(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
     VkResult StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
+    VkResult StageInputFrameQpMap(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
+                                  VkCommandBuffer cmdBuf = VK_NULL_HANDLE);
     VkResult SubmitStagedInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
     VkResult SubmitStagedQpMap(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
+    VkResult EncodeFrameCommon(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
     virtual VkResult EncodeFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo) = 0; // Must be implemented by the codec
     virtual VkResult HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
 
@@ -574,6 +578,8 @@ protected:
                                      uint32_t dstCopyArrayLayer = 0,
                                      VkImageLayout srcImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                      VkImageLayout dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+    void ProcessQpMap(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
 
     virtual VkResult ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
                                 uint32_t frameIdx, uint32_t ofTotalFrames) = 0;
@@ -696,6 +702,7 @@ protected:
     VkSharedBaseObj<VulkanVideoImagePool>    m_linearInputImagePool;
     VkSharedBaseObj<VulkanVideoImagePool>    m_inputImagePool;
     VkSharedBaseObj<VulkanVideoImagePool>    m_dpbImagePool;
+    VkSharedBaseObj<VulkanFilter>            m_inputComputeFilter;
     VkSharedBaseObj<VulkanCommandBufferPool> m_inputCommandBufferPool;
     VkSharedBaseObj<VulkanCommandBufferPool> m_encodeCommandBufferPool;
     VulkanBitstreamBufferPool                m_bitstreamBuffersQueue;

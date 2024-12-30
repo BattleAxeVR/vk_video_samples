@@ -264,8 +264,8 @@ bool VulkanVideoProcessor::Seek(int stream_index, int64_t timestamp, int flags)
 void VulkanVideoProcessor::Deinit()
 {
     m_vkParser = nullptr;
-    m_vkVideoDecoder = nullptr;
     m_vkVideoFrameBuffer = nullptr;
+    m_vkVideoDecoder = nullptr;
     m_videoStreamDemuxer = nullptr;
 }
 
