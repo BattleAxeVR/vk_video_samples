@@ -81,6 +81,28 @@ public:
         return result;
     }
 
+    template<class VkVideoEncodeCodecQualityLevelPropertiesKHR, VkStructureType VK_STRUCTURE_TYPE_VIDEO_ENCODE_CODEC_QUALITY_LEVEL_PROPERTIES_KHR>
+    static VkResult GetPhysicalDeviceVideoEncodeQualityLevelProperties(const VulkanDeviceContext* vkDevCtx,
+                                                                       const VkVideoCoreProfile& videoProfile,
+                                                                       uint32_t qualityLevel,
+                                                                       VkVideoEncodeQualityLevelPropertiesKHR& qualityLevelProperties,
+                                                                       VkVideoEncodeCodecQualityLevelPropertiesKHR& codecQualityLevelProperties)
+    {
+        VkPhysicalDeviceVideoEncodeQualityLevelInfoKHR qualityLevelInfo = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_QUALITY_LEVEL_INFO_KHR,
+                                                                            nullptr,
+                                                                            videoProfile.GetProfile(),
+                                                                            qualityLevel};
+        codecQualityLevelProperties = VkVideoEncodeCodecQualityLevelPropertiesKHR { VK_STRUCTURE_TYPE_VIDEO_ENCODE_CODEC_QUALITY_LEVEL_PROPERTIES_KHR };
+        qualityLevelProperties = VkVideoEncodeQualityLevelPropertiesKHR { VK_STRUCTURE_TYPE_VIDEO_ENCODE_QUALITY_LEVEL_PROPERTIES_KHR, &codecQualityLevelProperties };
+        VkResult result = vkDevCtx->GetPhysicalDeviceVideoEncodeQualityLevelPropertiesKHR(vkDevCtx->getPhysicalDevice(),
+                            &qualityLevelInfo, &qualityLevelProperties);
+        assert(result == VK_SUCCESS);
+        if (result != VK_SUCCESS) {
+            fprintf(stderr, "\nERROR: GetPhysicalDeviceVideoEncodeQualityLevelProperties() RESULT: 0x%x\n", result);
+        }
+        return result;
+    }
+
     static VkResult GetSupportedVideoFormats(const VulkanDeviceContext* vkDevCtx,
                                              const VkVideoCoreProfile& videoProfile,
                                              VkVideoDecodeCapabilityFlagsKHR capabilityFlags,
@@ -255,6 +277,16 @@ public:
                     assert(!"Unsupported h.265 STD version");
                     return VK_ERROR_INCOMPATIBLE_DRIVER;
                 }
+            } else if (videoProfile.GetCodecType() == VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR) {
+                const VkVideoDecodeAV1CapabilitiesKHR* pAV1DecCapabilities = (VkVideoDecodeAV1CapabilitiesKHR*)pVideoDecodeCapabilities->pNext;
+                std::cout << "\t\t\t" << "maxLevelIdc: " << pAV1DecCapabilities->maxLevel << std::endl;
+                if (strncmp(pVideoCapabilities->stdHeaderVersion.extensionName,
+                        VK_STD_VULKAN_VIDEO_CODEC_AV1_DECODE_EXTENSION_NAME,
+                            sizeof (pVideoCapabilities->stdHeaderVersion.extensionName) - 1U) ||
+                    (pVideoCapabilities->stdHeaderVersion.specVersion != VK_STD_VULKAN_VIDEO_CODEC_AV1_DECODE_SPEC_VERSION)) {
+                    assert(!"Unsupported AV1 STD version");
+                    return VK_ERROR_INCOMPATIBLE_DRIVER;
+                }
             } else {
                 assert(!"Unsupported codec");
             }
@@ -332,8 +364,11 @@ public:
                                                             int32_t* pVideoQueueFamily,
             VkQueueFlags queueFlagsRequired = ( VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_VIDEO_ENCODE_BIT_KHR),
             VkVideoCodecOperationFlagsKHR videoCodeOperations =
-                                              ( VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR | VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR |
-                                                VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR | VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR |
+                                              ( VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR |
+                                                VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR |
+                                                VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR  |
+                                                VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR |
+                                                VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR |
                                                 VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR))
     {
         std::vector<VkQueueFamilyProperties2> queues;

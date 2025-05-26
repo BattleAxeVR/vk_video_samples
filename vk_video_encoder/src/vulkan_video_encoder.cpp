@@ -125,7 +125,7 @@ VkResult VulkanVideoEncoderImpl::Initialize(VkVideoCodecOperationFlagBitsKHR vid
     m_vkDevCtxt.AddReqDeviceExtensions(requiredDeviceExtension);
     m_vkDevCtxt.AddOptDeviceExtensions(optinalDeviceExtension);
 
-    result = m_vkDevCtxt.InitVulkanDevice(m_encoderConfig->appName.c_str(),
+    result = m_vkDevCtxt.InitVulkanDevice(m_encoderConfig->appName.c_str(), VK_NULL_HANDLE,
                                           m_encoderConfig->verbose);
     if (result != VK_SUCCESS) {
         printf("Could not initialize the Vulkan device!\n");
@@ -167,7 +167,8 @@ VkResult VulkanVideoEncoderImpl::Initialize(VkVideoCodecOperationFlagBitsKHR vid
                                             nullptr,
                                             requestVideoDecodeQueueMask,
                                             (VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR |
-                                             VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR),
+                                             VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR |
+                                             VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR),
                                             requestVideoEncodeQueueMask,
                                             (VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR |
                                              VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR |

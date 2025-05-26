@@ -164,7 +164,8 @@ int EncoderConfigAV1::DoParseArguments(int argc, char* argv[])
     return 0;
 }
 
-bool EncoderConfigAV1::InitSequenceHeader(StdVideoAV1SequenceHeader *seqHdr)
+bool EncoderConfigAV1::InitSequenceHeader(StdVideoAV1SequenceHeader *seqHdr,
+                                          StdVideoEncodeAV1OperatingPointInfo* opInfo)
 {
     memset(seqHdr, 0, sizeof(StdVideoAV1SequenceHeader));
 
@@ -179,6 +180,9 @@ bool EncoderConfigAV1::InitSequenceHeader(StdVideoAV1SequenceHeader *seqHdr)
     seqHdr->order_hint_bits_minus_1 = ORDER_HINT_BITS - 1;
     seqHdr->flags.enable_cdef = enableCdef ? 1 : 0;
     seqHdr->flags.enable_restoration = enableLr ? 1 : 0;
+
+    opInfo->seq_level_idx = level;
+    opInfo->seq_tier = tier;
 
     return true;
 }
@@ -210,6 +214,61 @@ VkResult EncoderConfigAV1::InitDeviceCapabilities(const VulkanDeviceContext* vkD
         std::cout << "\t\t\t" << "maxActiveReferencePictures: " << videoCapabilities.maxActiveReferencePictures << std::endl;
     }
 
+    result = VulkanVideoCapabilities::GetPhysicalDeviceVideoEncodeQualityLevelProperties<VkVideoEncodeAV1QualityLevelPropertiesKHR, VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_QUALITY_LEVEL_PROPERTIES_KHR>
+                                                                                (vkDevCtx, videoCoreProfile, qualityLevel,
+                                                                                 qualityLevelProperties,
+                                                                                 av1QualityLevelProperties);
+    if (result != VK_SUCCESS) {
+        std::cout << "*** Could not get Video Encode QualityLevel Properties :" << result << " ***" << std::endl;
+        assert(!"Could not get Video Encode QualityLevel Properties");
+        return result;
+    }
+
+    if (verboseMsg) {
+        std::cout << "\t\t" << VkVideoCoreProfile::CodecToName(codec) << "encode quality level properties: " << std::endl;
+        std::cout << "\t\t\t" << "preferredRateControlMode : " << qualityLevelProperties.preferredRateControlMode << std::endl;
+        std::cout << "\t\t\t" << "preferredRateControlLayerCount : " << qualityLevelProperties.preferredRateControlLayerCount << std::endl;
+        std::cout << "\t\t\t" << "preferredRateControlFlags : " << av1QualityLevelProperties.preferredRateControlFlags << std::endl;
+        std::cout << "\t\t\t" << "preferredGopFrameCount : " << av1QualityLevelProperties.preferredGopFrameCount << std::endl;
+        std::cout << "\t\t\t" << "preferredKeyFramePeriod : " << av1QualityLevelProperties.preferredKeyFramePeriod << std::endl;
+        std::cout << "\t\t\t" << "preferredConsecutiveBipredictiveFrameCount : " << av1QualityLevelProperties.preferredConsecutiveBipredictiveFrameCount << std::endl;
+        std::cout << "\t\t\t" << "preferredTemporalLayerCount : " << av1QualityLevelProperties.preferredTemporalLayerCount << std::endl;
+        std::cout << "\t\t\t" << "preferredConstantQIndex.intraQIndex : " << av1QualityLevelProperties.preferredConstantQIndex.intraQIndex << std::endl;
+        std::cout << "\t\t\t" << "preferredConstantQIndex.predictiveQIndex : " << av1QualityLevelProperties.preferredConstantQIndex.predictiveQIndex << std::endl;
+        std::cout << "\t\t\t" << "preferredConstantQIndex.bipredictiveQIndex : " << av1QualityLevelProperties.preferredConstantQIndex.bipredictiveQIndex << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxSingleReferenceCount : " << av1QualityLevelProperties.preferredMaxSingleReferenceCount << std::endl;
+        std::cout << "\t\t\t" << "preferredSingleReferenceNameMask : " << av1QualityLevelProperties.preferredSingleReferenceNameMask << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxUnidirectionalCompoundReferenceCount : " << av1QualityLevelProperties.preferredMaxUnidirectionalCompoundReferenceCount << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxUnidirectionalCompoundGroup1ReferenceCount : " << av1QualityLevelProperties.preferredMaxUnidirectionalCompoundGroup1ReferenceCount << std::endl;
+        std::cout << "\t\t\t" << "preferredUnidirectionalCompoundReferenceNameMask : " << av1QualityLevelProperties.preferredUnidirectionalCompoundReferenceNameMask << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxBidirectionalCompoundReferenceCount : " << av1QualityLevelProperties.preferredMaxBidirectionalCompoundReferenceCount << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxBidirectionalCompoundGroup1ReferenceCount : " << av1QualityLevelProperties.preferredMaxBidirectionalCompoundGroup1ReferenceCount << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxBidirectionalCompoundGroup2ReferenceCount : " << av1QualityLevelProperties.preferredMaxBidirectionalCompoundGroup2ReferenceCount << std::endl;
+        std::cout << "\t\t\t" << "preferredBidirectionalCompoundReferenceNameMask : " << av1QualityLevelProperties.preferredBidirectionalCompoundReferenceNameMask << std::endl;
+    }
+
+    if (rateControlMode == VK_VIDEO_ENCODE_RATE_CONTROL_MODE_FLAG_BITS_MAX_ENUM_KHR) {
+        rateControlMode = qualityLevelProperties.preferredRateControlMode;
+    }
+    if (gopStructure.GetGopFrameCount() == ZERO_GOP_FRAME_COUNT) {
+        gopStructure.SetGopFrameCount(av1QualityLevelProperties.preferredGopFrameCount);
+    }
+    if (gopStructure.GetIdrPeriod() == ZERO_GOP_IDR_PERIOD) {
+        gopStructure.SetIdrPeriod(av1QualityLevelProperties.preferredKeyFramePeriod);
+    }
+    if (gopStructure.GetConsecutiveBFrameCount() == CONSECUTIVE_B_FRAME_COUNT_MAX_VALUE) {
+        gopStructure.SetConsecutiveBFrameCount(av1QualityLevelProperties.preferredConsecutiveBipredictiveFrameCount);
+    }
+    if (constQp.qpIntra == 0) {
+        constQp.qpIntra = av1QualityLevelProperties.preferredConstantQIndex.intraQIndex;
+    }
+    if (constQp.qpInterP == 0) {
+        constQp.qpInterP = av1QualityLevelProperties.preferredConstantQIndex.predictiveQIndex;
+    }
+    if (constQp.qpInterB == 0) {
+        constQp.qpInterB = av1QualityLevelProperties.preferredConstantQIndex.bipredictiveQIndex;
+    }
+
     return VK_SUCCESS;
 }
 
@@ -219,49 +278,59 @@ int8_t EncoderConfigAV1::InitDpbCount()
     return dpbCount;
 }
 
-bool EncoderConfigAV1::DetermineLevelTier()
+bool EncoderConfigAV1::ValidateLevel(uint32_t lvl, uint32_t lvlTier)
 {
     uint32_t frameRateNum = (frameRateNumerator > 0) ? frameRateNumerator : (uint32_t)FRAME_RATE_NUM_DEFAULT;
     uint32_t frameRateDenom = (frameRateDenominator > 0) ? frameRateDenominator : (uint32_t)FRAME_RATE_DEN_DEFAULT;
     uint32_t picSize = encodeWidth * encodeHeight;
-    uint64_t displayRate = (frameRateNum * picSize) / frameRateDenom;
-    uint64_t decodeRate = ((frameRateNum + 0) * picSize) / frameRateDenom;
+    uint64_t displayRate = ((uint64_t)frameRateNum * picSize) / frameRateDenom;
+    uint64_t decodeRate = (((uint64_t)frameRateNum + 0) * picSize) / frameRateDenom;
     uint32_t headerRate = (frameRateNum + 0) / frameRateDenom;
 
+    if (levelLimits[lvl].level == STD_VIDEO_AV1_LEVEL_INVALID) return false;
+
+    if (picSize > levelLimits[lvl].maxPicSize) return false;
+    if (encodeWidth > levelLimits[lvl].maxHSize) return false;
+    if (encodeHeight > levelLimits[lvl].maxVSize) return false;
+    if (displayRate > levelLimits[lvl].maxDisplayRate) return false;
+    if (decodeRate > levelLimits[lvl].maxDecodeRate) return false;
+    if (headerRate > levelLimits[lvl].maxHeaderRate) return false;
+
+    if ((hrdBitrate != 0) || (averageBitrate != 0)) {
+        uint32_t _maxBitrate = std::max(hrdBitrate, averageBitrate);
+        uint32_t picSizeProfileFactor = (profile == STD_VIDEO_AV1_PROFILE_MAIN) ? 15 : ((profile == STD_VIDEO_AV1_PROFILE_HIGH ? 30 : 26));
+        // Estimate max compressed size to be up to 16 frames at average rate
+        uint32_t maxCompressedSize = std::max(1u, ((_maxBitrate << 4) / frameRateNum) * frameRateDenom);
+        double minCR = ((double)picSize * picSizeProfileFactor) / maxCompressedSize;
+
+        if (minCR < GetLevelMinCR(lvl, lvlTier, (double)decodeRate)) return false;
+        // Add a safety margin of 1.5x
+        if (((3 * _maxBitrate) >> 1) > GetLevelMaxBitrate(lvl, lvlTier)) return false;
+    }
+
+    return true;
+}
+
+bool EncoderConfigAV1::DetermineLevelTier()
+{
     uint32_t lvl = STD_VIDEO_AV1_LEVEL_2_0;
 
-    // TODO: how to choose tier
-    tier = 0;
-
     for (; lvl <= STD_VIDEO_AV1_LEVEL_7_3; lvl++) {
-        if (levelLimits[lvl].level == STD_VIDEO_AV1_LEVEL_INVALID) continue;
+        if (ValidateLevel(lvl, 0)) { // validate with tier 0
+            level = (StdVideoAV1Level)lvl;
+            tier = 0;
+            break;
+        }
 
-        level = (StdVideoAV1Level)lvl;
-
-        if (picSize > levelLimits[lvl].maxPicSize) continue;
-        if (encodeWidth > levelLimits[lvl].maxHSize) continue;
-        if (encodeHeight > levelLimits[lvl].maxVSize) continue;
-        if (displayRate > levelLimits[lvl].maxDisplayRate) continue;
-        if (decodeRate > levelLimits[lvl].maxDecodeRate) continue;
-        if (headerRate > levelLimits[lvl].maxHeaderRate) continue;
-
-        // TODO: if ratecontrol params are specified at the command line use the below code
-        // otherwise, use level max values.
-        //if (hrdBitrate != 0) {
-        //    if (lvl > STD_VIDEO_AV1_LEVEL_4_0) {
-        //        tier = 1;
-        //    }
-        //    uint32_t lvlBitrate = GetLevelBitrate();
-        //    if (hrdBitrate > lvlBitrate) continue;
-        //}
-
-        // double minCompressRatio = GetMinCompressRatio(decodeRate);
-        // uint32_t compressedSize = 0; // TODO: How to estimate?
-        // uint32_t uncompressedSize = GetUncompressedSize();
-        // uint32_t compressedRatio = uncompressedSize / compressedSize;
-        // if (compressedRatio < minCompressRatio) continue;
-
-        break;
+        if ((lvl >= STD_VIDEO_AV1_LEVEL_4_0) && ValidateLevel(lvl, 1)) { // validate with tier 1
+            level = (StdVideoAV1Level)lvl;
+            tier = 1;
+            break;
+        }
+    }
+    if (lvl > STD_VIDEO_AV1_LEVEL_7_3) {
+        level = STD_VIDEO_AV1_LEVEL_7_3;
+        tier = 0;
     }
 
     return true;
@@ -272,7 +341,7 @@ bool EncoderConfigAV1::InitRateControl()
     DetermineLevelTier();
 
     // use level max values for now. Limit it to 120Mbits/sec
-    uint32_t levelBitrate = std::min(GetLevelBitrate(), 120000000u);
+    uint32_t levelBitrate = std::min(GetLevelBitrate(level, tier), 120000000u);
 
     // If no bitrate is specified, use the level limit
     if (averageBitrate == 0) {

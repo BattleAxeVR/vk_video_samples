@@ -392,14 +392,24 @@ beach:
     }
 
     uint32_t GetFrameCount(uint32_t width, uint32_t height, uint8_t bpp, VkVideoChromaSubsamplingFlagBitsKHR chromaSubsampling) {
-        uint8_t nBytes = (bpp + 7) / 8;
-        double samplingFactor = 1.5;
+        uint8_t nBytes = (uint8_t)(bpp + 7) / 8;
+        double samplingFactor = 1.5; // Default for 420
         switch (chromaSubsampling)
         {
+        case VK_VIDEO_CHROMA_SUBSAMPLING_MONOCHROME_BIT_KHR:
+            samplingFactor = 1.0; // Only Y component
+            break;
         case VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR:
-            samplingFactor = 1.5;
+            samplingFactor = 1.5; // Y + 1/4 U + 1/4 V = 1.5
+            break;
+        case VK_VIDEO_CHROMA_SUBSAMPLING_422_BIT_KHR:
+            samplingFactor = 2.0; // Y + 1/2 U + 1/2 V = 2.0
+            break;
+        case VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR:
+            samplingFactor = 3.0; // Full Y + full U + full V = 3.0
             break;
         default:
+            assert(!"Unknown chroma subsampling");
             break;
         }
         uint32_t frameSize = (uint32_t)(width * height * nBytes * samplingFactor);
@@ -653,6 +663,10 @@ struct EncoderConfig : public VkVideoRefCountBase {
     enum { DEFAULT_MAX_NUM_REF_FRAMES = 16 };
     enum QpMapMode { DELTA_QP_MAP, EMPHASIS_MAP };
 
+    enum { ZERO_GOP_FRAME_COUNT = 0 };
+    enum { ZERO_GOP_IDR_PERIOD  = 0 };
+    enum { CONSECUTIVE_B_FRAME_COUNT_MAX_VALUE = UINT8_MAX};
+
 private:
     std::atomic<int32_t> refCount;
 
@@ -675,6 +689,8 @@ public:
     uint32_t encodeOffsetY;
     uint32_t encodeWidth;
     uint32_t encodeHeight;
+    uint32_t encodeAlignedWidth;
+    uint32_t encodeAlignedHeight;
     uint32_t encodeMaxWidth;
     uint32_t encodeMaxHeight;
     uint32_t startFrame;
@@ -686,6 +702,7 @@ public:
     VkVideoCapabilitiesKHR videoCapabilities;
     VkVideoEncodeCapabilitiesKHR videoEncodeCapabilities;
     VkVideoEncodeQuantizationMapCapabilitiesKHR quantizationMapCapabilities;
+    VkVideoEncodeQualityLevelPropertiesKHR qualityLevelProperties;
     VkVideoEncodeRateControlModeFlagBitsKHR rateControlMode;
     uint32_t averageBitrate; // kbits/sec
     uint32_t maxBitrate;     // kbits/sec
@@ -746,6 +763,11 @@ public:
     uint32_t enableHwLoadBalancing : 1;
     uint32_t selectVideoWithComputeQueue : 1;
     uint32_t enablePreprocessComputeFilter : 1;
+    // enablePictureRowColReplication
+    // 0: row and column replication is disabled;
+    // 1: (default) replicate the last row and column to the padding area;
+    // 2: replicate only one row and one column to the padding area;
+    uint32_t enablePictureRowColReplication : 2;
     uint32_t enableOutOfOrderRecording : 1; // Testing only - don't use for production!
 
     EncoderConfig()
@@ -767,6 +789,8 @@ public:
     , encodeOffsetY(0)
     , encodeWidth(0)
     , encodeHeight(0)
+    , encodeAlignedWidth(0)
+    , encodeAlignedHeight(0)
     , encodeMaxWidth(0)
     , encodeMaxHeight(0)
     , startFrame(0)
@@ -778,7 +802,7 @@ public:
     , videoCapabilities()
     , videoEncodeCapabilities()
     , quantizationMapCapabilities()
-    , rateControlMode(VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DEFAULT_KHR)
+    , rateControlMode(VK_VIDEO_ENCODE_RATE_CONTROL_MODE_FLAG_BITS_MAX_ENUM_KHR)
     , averageBitrate()
     , maxBitrate()
     , hrdBitrate(maxBitrate)
@@ -789,9 +813,9 @@ public:
     , constQp()
     , enableQpMap(false)
     , qpMapMode(DELTA_QP_MAP)
-    , gopStructure(DEFAULT_GOP_FRAME_COUNT,
-                   DEFAULT_GOP_IDR_PERIOD,
-                   DEFAULT_CONSECUTIVE_B_FRAME_COUNT,
+    , gopStructure(ZERO_GOP_FRAME_COUNT,
+                   ZERO_GOP_IDR_PERIOD,
+                   CONSECUTIVE_B_FRAME_COUNT_MAX_VALUE,
                    DEFAULT_TEMPORAL_LAYER_COUNT)
     , dpbCount(8)
     , ycbcrModel(VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709)
@@ -831,7 +855,8 @@ public:
     , enableVideoDecoder(false)
     , enableHwLoadBalancing(false)
     , selectVideoWithComputeQueue(false)
-    , enablePreprocessComputeFilter(false)
+    , enablePreprocessComputeFilter(true)
+    , enablePictureRowColReplication(1)
     , enableOutOfOrderRecording(false)
     { }
 
@@ -918,6 +943,9 @@ public:
         if (!input.VerifyInputs()) {
             return VK_ERROR_INVALID_VIDEO_STD_PARAMETERS_KHR;
         }
+
+        // Copy chroma subsampling from input to encoder config
+        encodeChromaSubsampling = input.chromaSubsampling;
 
         if ((encodeWidth == 0) || (encodeWidth > input.width)) {
             encodeWidth = input.width;

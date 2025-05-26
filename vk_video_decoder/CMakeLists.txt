@@ -1,9 +1,10 @@
 # The name of our project is "VULKAN_VIDEO_TESTS". CMakeLists files in this project can
 # refer to the root source directory of the project as ${VULKAN_VIDEO_TESTS_SOURCE_DIR} and
 # to the root binary directory of the project as ${VULKAN_BINARY_DIR}.
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.20.0)
 
 include(CheckCXXCompilerFlag)
+include(FetchContent)
 
 # This must come before the project command.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.12" CACHE STRING "Minimum OS X deployment version")
@@ -30,18 +31,8 @@ if (USE_CCACHE)
     endif(CCACHE_FOUND)
 endif()
 
-find_package(Vulkan REQUIRED)
-
-if(Vulkan_FOUND)
-    message(STATUS "Found Vulkan inlcude: ${Vulkan_INCLUDE_DIR}")
-    message(STATUS "Found Vulkan libs: ${Vulkan_LIBRARIES}")
-
-    # Extract the directory part of the Vulkan library path
-    get_filename_component(VULKAN_LIB_DIR "${Vulkan_LIBRARIES}" DIRECTORY)
-    set(SHADERC_LIB_SHARED "shaderc_shared")
-else()
-    message(FATAL_ERROR "Could not find Vulkan SDK")
-endif()
+# Handle Vulkan and shaderc dependencies
+include(FindVulkanAndDependencies)
 
 ############ LINUX LIBRARY includes ######################################
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -71,7 +62,6 @@ endif()
 
 ############ WINDOWS LIBRARY includes ######################################
 if(WIN32)
-    add_definitions(-DNOMINMAX="1")
     if ("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
         message(STATUS "Selected Windows build type: Debug")
         if(NOT DEFINED ENV{LIB_ARCH_DIR})
@@ -148,6 +138,37 @@ else()
 endif()
 ############ VULKAN_VIDEO_PARSER_LIB_PATH ######################################
 
+############ VULKAN_VIDEO_DECODER_LIB_PATH ######################################
+
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs/VkVideoDecoder")
+    set(LIBVKVIDEODECODER_BINARY_ROOT "${CMAKE_BINARY_DIR}/libs" CACHE STRING "User defined path to the the decoder library binaries for this project")
+else()
+   set(LIBVKVIDEODECODER_BINARY_ROOT "${VULKAN_VIDEO_TESTS_SOURCE_DIR}/bin/libs/vk_video_decoder/${LIB_ARCH_DIR}" CACHE STRING "User defined path to the the decoder library binaries for this project")
+endif()
+message(STATUS "LIBVKVIDEODECODER_BINARY_ROOT is at ${LIBVKVIDEODECODER_BINARY_ROOT}" )
+
+if (DEFINED ENV{VULKAN_VIDEO_DECODER_LIB_DIR_PATH})
+    MESSAGE(STATUS "VULKAN_VIDEO_DECODER_LIB_DIR_PATH ENV VAR is set to $ENV{VULKAN_VIDEO_DECODER_LIB_DIR_PATH}")
+    set(VULKAN_VIDEO_DECODER_LIB_PATH  "$ENV{VULKAN_VIDEO_DECODER_LIB_DIR_PATH}" CACHE PATH "Path to Vulkan Video Decoder library directory" FORCE)
+else()
+    set(VULKAN_VIDEO_DECODER_LIB_PATH  "${LIBVKVIDEODECODER_BINARY_ROOT}" CACHE PATH "Path to Vulkan Video Decoder library directory")
+endif()
+
+set(VULKAN_VIDEO_DECODER_LIB vkvideo-decoder CACHE PATH "The name of Vulkan Video Decoder library")
+set(VULKAN_VIDEO_DECODER_STATIC_LIB vkvideo-decoder-static CACHE PATH "The name of Vulkan Video Decoder static library")
+set(VULKAN_VIDEO_DECODER_LIB_VERSION 1 CACHE PATH "The version of Vulkan Video Decoder library")
+
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs")
+
+else()
+    if (EXISTS "${VULKAN_VIDEO_DECODER_LIB_PATH}")
+        message(STATUS "Trying to find Vulkan Video Decoder library at ${VULKAN_VIDEO_DECODER_LIB_PATH}" )
+        find_library(VULKAN_VIDEO_DECODER_LIB_WITH_PATH NAMES ${VULKAN_VIDEO_DECODER_LIB} PATHS ${VULKAN_VIDEO_DECODER_LIB_PATH})
+        message(STATUS "Vulkan Video Decoder Lib: ${VULKAN_VIDEO_DECODER_LIB_WITH_PATH}" )
+    endif()
+endif()
+############ VULKAN_VIDEO_DECODER_LIB_PATH ######################################
+
 ############ VULKAN_FFMPEG_LIB_PATH ######################################
 if (DEFINED ENV{VULKAN_FFMPEG_LIB_DIR_PATH})
     MESSAGE(STATUS "VULKAN_FFMPEG_LIB_DIR_PATH ENV VAR is set to $ENV{VULKAN_FFMPEG_LIB_DIR_PATH}")
@@ -192,13 +213,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(DEMOS_WSI_SELECTION "XCB" CACHE STRING "Select WSI target for demos (XCB, XLIB, WAYLAND, MIR, DISPLAY)")
 
     if (BUILD_WSI_XCB_SUPPORT)
-        # Workaround this spurious warning, which for this project is not an issue,
-        #
-        # The package name passed to `find_package_handle_standard_args` (xcb) does not match the name of the calling package (XCB).  This can lead to problems
-        # in calling code that expects `find_package` result variables (e.g.,`_FOUND`) to follow a certain pattern.
-        set(FPHSA_NAME_MISMATCHED 1)
         find_package(XCB REQUIRED)
-        unset(FPHSA_NAME_MISMATCHED)
     endif()
 
     if (BUILD_WSI_XLIB_SUPPORT)
@@ -206,10 +221,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 
     if (BUILD_WSI_WAYLAND_SUPPORT)
-        # See comments above for XCB
-        set(FPHSA_NAME_MISMATCHED 1)
         find_package(Wayland REQUIRED)
-        unset(FPHSA_NAME_MISMATCHED)
         include_directories(${WAYLAND_CLIENT_INCLUDE_DIR})
     endif()
 
@@ -220,7 +232,74 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_LIBDIR}")
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    add_definitions(-DVK_USE_PLATFORM_WIN32_KHR -DWIN32_LEAN_AND_MEAN -DNOMINMAX="1")
+    set(DisplayServer Win32)
+    if (NOT MSVC_VERSION LESS 1900)
+        # Enable control flow guard
+        message(STATUS "Building demos with control flow guard")
+        add_compile_options("$<$<CXX_COMPILER_ID:MSVC>:/guard:cf>")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /guard:cf")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /guard:cf")
+    endif()
+    set(DEMO_INCLUDE_DIRS
+       "${PROJECT_SOURCE_DIR}/icd/common"
+        ${DEMO_INCLUDE_DIRS}
+    )
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if (NOT DEMOS_WSI_SELECTION)
+        set(DEMOS_WSI_SELECTION "XCB")
+    endif()
+
+    if (DEMOS_WSI_SELECTION STREQUAL "XCB")
+        if (NOT BUILD_WSI_XCB_SUPPORT)
+            message( FATAL_ERROR "Selected XCB for demos build but not building Xcb support" )
+        endif()
+        set(DEMO_INCLUDE_DIRS
+            ${XCB_INCLUDE_DIRS}
+            ${DEMO_INCLUDE_DIRS}
+        )
+        link_libraries(${XCB_LIBRARIES})
+        add_definitions(-DVK_USE_PLATFORM_XCB_KHR)
+    elseif(DEMOS_WSI_SELECTION STREQUAL "XLIB")
+        if (NOT BUILD_WSI_XLIB_SUPPORT)
+            message( FATAL_ERROR "Selected XLIB for demos build but not building Xlib support" )
+        endif()
+        set(DEMO_INCLUDE_DIRS
+            ${X11_INCLUDE_DIR}
+            ${DEMO_INCLUDE_DIRS}
+        )
+        link_libraries(${X11_LIBRARIES})
+        add_definitions(-DVK_USE_PLATFORM_XLIB_KHR)
+    elseif(DEMOS_WSI_SELECTION STREQUAL "WAYLAND")
+        if (NOT BUILD_WSI_WAYLAND_SUPPORT)
+            message( FATAL_ERROR "Selected Wayland for demos build but not building Wayland support" )
+        endif()
+        set(DEMO_INCLUDE_DIRS
+            ${WAYLAND_CLIENT_INCLUDE_DIR}
+            ${DEMO_INCLUDE_DIRS}
+        )
+        link_libraries(${WAYLAND_CLIENT_LIBRARIES})
+        add_definitions(-DVK_USE_PLATFORM_WAYLAND_KHR)
+    elseif(DEMOS_WSI_SELECTION STREQUAL "DISPLAY")
+        add_definitions(-DVK_USE_PLATFORM_DISPLAY_KHR)
+    else()
+        message( FATAL_ERROR "Unrecognized value for DEMOS_WSI_SELECTION: ${DEMOS_WSI_SELECTION}" )
+     endif()
+
+    include_directories ("${PROJECT_SOURCE_DIR}/icd/common")
+    link_libraries(${API_LOWERCASE} m)
+else()
+    message(FATAL_ERROR "Unsupported Platform!")
+endif()
+
+add_definitions(-DVK_USE_VIDEO_QUEUE)
+add_definitions(-DVK_USE_VIDEO_DECODE_QUEUE)
+add_definitions(-DVK_USE_VIDEO_ENCODE_QUEUE)
+add_definitions(-DVK_ENABLE_BETA_EXTENSIONS)
+
 find_package(FFmpeg REQUIRED)
+set(FFMPEG_AVAILABLE OFF)
 
 # FFMPEG_FOUND - system has ffmpeg or libav
 # FFMPEG_INCLUDE_DIR - the ffmpeg include directory
@@ -231,33 +310,44 @@ find_package(FFmpeg REQUIRED)
 if(FFMPEG_FOUND)
     message("Found FFMPEG/LibAV libraries")
     include_directories(${FFMPEG_INCLUDE_DIR})
+    set(FFMPEG_AVAILABLE ON)
 else()
     if(WIN32)
-		find_library(AVCODEC_LIB NAMES avcodec PATHS ${VULKAN_FFMPEG_LIB_PATH})
-		message(STATUS ${AVCODEC_LIB})
-		find_library(AVFORMAT_LIB NAMES avformat PATHS ${VULKAN_FFMPEG_LIB_PATH})
-		message(STATUS ${AVFORMAT_LIB})
-		find_library(AVUTIL_LIB NAMES avutil PATHS ${VULKAN_FFMPEG_LIB_PATH})
-		message(STATUS ${AVUTIL_LIB})
-		include_directories(${FFMPEG_INCLUDE_DIR})
+       find_library(AVCODEC_LIB NAMES avcodec PATHS ${VULKAN_FFMPEG_LIB_PATH})
+       message(STATUS ${AVCODEC_LIB})
+       find_library(AVFORMAT_LIB NAMES avformat PATHS ${VULKAN_FFMPEG_LIB_PATH})
+       message(STATUS ${AVFORMAT_LIB})
+       find_library(AVUTIL_LIB NAMES avutil PATHS ${VULKAN_FFMPEG_LIB_PATH})
+       message(STATUS ${AVUTIL_LIB})
 
-   install(DIRECTORY "${VULKAN_FFMPEG_LIB_PATH}/../bin/"
-           DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
-           PATTERN "*.def" EXCLUDE
-           PATTERN "*.a" EXCLUDE)
+       if(AVCODEC_LIB AND AVFORMAT_LIB AND AVUTIL_LIB)
+           message(STATUS "Found FFMPEG libraries manually")
+           set(FFMPEG_AVAILABLE ON)
+	       include_directories(${FFMPEG_INCLUDE_DIR})
 
-   install(DIRECTORY "${VULKAN_FFMPEG_LIB_PATH}/"
-           DESTINATION "${CMAKE_INSTALL_PREFIX}/lib")
+	       install(DIRECTORY "${VULKAN_FFMPEG_LIB_PATH}/../bin/"
+	       DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
+	            PATTERN "*.def" EXCLUDE
+	            PATTERN "*.a" EXCLUDE)
 
+	       install(DIRECTORY "${VULKAN_FFMPEG_LIB_PATH}/"
+	            DESTINATION "${CMAKE_INSTALL_PREFIX}/lib")
+       else()
+            message(WARNING "Can't find libavcodec, libavformat, or libavutil on Windows!")
+       endif()
     else()
-		message("Can't find libavcodec, libavformat or libavutil. Please add them!")
+        message(WARNING "Can't find libavcodec, libavformat, or libavutil on Linux!")
     endif()
+endif()
+
+if (NOT FFMPEG_AVAILABLE)
+    message(WARNING "FFMPEG demuxing is not going to be supported.")
 endif()
 
 set(SCRIPTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../scripts")
 
 # Header file for CMake settings
-include_directories("${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/../common/include" "${Vulkan_INCLUDE_DIR}")
+include_directories("${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/../common/include" "${VULKAN_HEADERS_INCLUDE_DIR}" "${Vulkan_INCLUDE_DIR}")
 
 if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_C_COMPILER_ID MATCHES "Clang")
     # set(COMMON_COMPILE_FLAGS "-Wall -Wextra -Wno-long-long -Wshadow -Wundef -Wconversion -Wno-sign-conversion -Wno-conversion -Wno-sign-compare")
@@ -320,8 +410,8 @@ else()
         set (LIBSOURCE_DIR "")
     elseif (CMAKE_CL_64)
         set (BUILDTGT_DIR build)
-        set (BINDATA_DIR Bin)
-        set (LIBSOURCE_DIR Lib)
+        set (BINDATA_DIR "")
+        set (LIBSOURCE_DIR "")
     else()
         set (BUILDTGT_DIR build32)
         set (BINDATA_DIR Bin32)
@@ -331,7 +421,6 @@ endif()
 
 option(BUILD_LOADER "Build loader" ON)
 option(BUILD_TESTS "Build tests" ON)
-option(BUILD_LAYERS "Build layers" ON)
 option(BUILD_DEMOS "Build demos" ON)
 if (APPLE)
     option(BUILD_VKJSON "Build vkjson" OFF)
@@ -340,7 +429,10 @@ else()
 endif()
 option(BUILD_ICD "Build icd" ON)
 
-set(VK_VIDEO_COMMON_LIBS_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../common/libs" CACHE STRING "Root path to common vkvideo libs sources")
+set(VK_VIDEO_COMMON_LIBS_SOURCE_REL_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../common/libs")
+get_filename_component(VK_VIDEO_COMMON_LIBS_SOURCE_ABS_PATH "${VK_VIDEO_COMMON_LIBS_SOURCE_REL_PATH}" ABSOLUTE)
+
+set(VK_VIDEO_COMMON_LIBS_SOURCE_ROOT "${VK_VIDEO_COMMON_LIBS_SOURCE_ABS_PATH}" CACHE STRING "Root path to common vkvideo libs sources")
 set(VK_VIDEO_DECODER_LIBS_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/libs" CACHE STRING "Root path to common vkvideo decoder libs sources")
 set(VK_VIDEO_DECODER_LIBS_INCLUDE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/include" CACHE STRING "Root path to video decoder libs includes")
 
@@ -352,19 +444,9 @@ if (WIN32)
         set (DEBUG_DECORATION "Debug")
         set (RELEASE_DECORATION "Release")
     endif()
-
 else()
     # not WIN32
-
 endif()
-
-if (WIN32)
-
-else ()
-    # not WIN32
-
-endif()
-
 
 set (PYTHON_CMD ${PYTHON_EXECUTABLE})
 
@@ -447,6 +529,7 @@ endif()
 set(VKVIDEO_UTILS_VLF_SOURCES
     ../common/layers/vk_format_utils.cpp
     )
+
 if (WIN32)
     add_library(VkVideoUtils STATIC ${VKVIDEO_UTILS_VLF_SOURCES})
     target_compile_definitions(VkVideoUtils PUBLIC _CRT_SECURE_NO_WARNINGS)
@@ -476,6 +559,17 @@ else()
            PATTERN "*.a" EXCLUDE)
 endif()
 
-if(BUILD_DEMOS)
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/libs")
+    add_subdirectory(libs)
+else()
+    install(DIRECTORY "${LIBVKVIDEODECODER_BINARY_ROOT}/"
+            DESTINATION "${CMAKE_INSTALL_PREFIX}/bin"
+            PATTERN "*.def" EXCLUDE
+            PATTERN "*.a" EXCLUDE)
+endif()
+
+add_subdirectory(test/vulkan-video-dec)
+
+if(BUILD_DEMOS AND NOT DEFINED DEQP_TARGET)
     add_subdirectory(demos)
 endif()

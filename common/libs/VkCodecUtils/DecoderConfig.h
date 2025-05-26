@@ -26,11 +26,11 @@
 #include <vector>
 #include <functional>
 #include <algorithm>
-#include <iomanip> 
+#include <iomanip>
 #include <sstream>
 #include "vulkan_interfaces.h"
 
-struct ProgramConfig {
+struct DecoderConfig {
 
      struct ArgSpec {
        const char *flag;
@@ -40,7 +40,7 @@ struct ProgramConfig {
        std::function<bool(const char **, const std::vector<ArgSpec> &)> lambda;
      };
 
-    ProgramConfig(const char* programName) {
+    DecoderConfig(const char* programName) {
         appName = programName;
         initialWidth = 1920;
         initialHeight = 1080;
@@ -75,15 +75,14 @@ struct ProgramConfig {
         enableHwLoadBalancing = false;
         selectVideoWithComputeQueue = false;
         enableVideoEncoder = false;
-        crcOutput = nullptr;
-        outputy4m = false;
+        outputy4m = true; // by default, use Y4M
         outputcrcPerFrame = false;
         outputcrc = false;
-        crcOutputFile = nullptr;
+        crcOutputFileName.clear();
     }
 
     using ProgramArgs = std::vector<ArgSpec>;
-    static bool showHelp(const char ** argv, const ProgramArgs &spec) { 
+    static bool showHelp(const char ** argv, const ProgramArgs &spec) {
         std::cout << argv[0] << std::endl;
         for ( auto& flag : spec ) {
             std::stringstream ss;
@@ -112,25 +111,23 @@ struct ProgramConfig {
                     exit(EXIT_SUCCESS);
                     return rtn;
                 }},
-            {"--enableStrDemux", nullptr, 0, "Enable stream demuxing",
-                [this](const char **, const ProgramArgs &a) {
-                    enableStreamDemuxing = true;
-                    return true;
-                }},
             {"--disableStrDemux", nullptr, 0, "Disable stream demuxing",
                 [this](const char **, const ProgramArgs &a) {
                     enableStreamDemuxing = false;
                     return true;
                 }},
-            {"--codec", nullptr, 1, "Codec to decode",
+            {"--codec", nullptr, 1, "Codec to use, if no stream auto-detect is in use",
                 [this](const char **args, const ProgramArgs &a) {
                     if ((strcmp(args[0], "hevc") == 0) ||
                         (strcmp(args[0], "h265") == 0)) {
                         forceParserType = VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR;
                         return true;
                     } else if ((strcmp(args[0], "avc") == 0) ||
-                        (strcmp(args[0], "h264") == 0)) {
+                               (strcmp(args[0], "h264") == 0)) {
                         forceParserType = VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR;
+                        return true;
+                    } else if (strcmp(args[0], "av1") == 0) {
+                        forceParserType = VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
                         return true;
                     } else {
                         std::cerr << "Invalid codec \"" << args[0] << "\"" << std::endl;
@@ -274,6 +271,11 @@ struct ProgramConfig {
                     directMode = true;
                     return true;
                 }},
+            {"--yuv", nullptr, 0, "Output raw YUV data",
+                [this](const char **args, const ProgramArgs &a) {
+                    outputy4m = false;
+                    return true;
+                }},
             {"--y4m", nullptr, 0, "Output to a Y4M container for easier loading by tools",
                 [this](const char **args, const ProgramArgs &a) {
                     outputy4m = true;
@@ -291,7 +293,7 @@ struct ProgramConfig {
                 }},
             {"--crcoutfile", nullptr, 1, "Output file to store the CRC output into.",
                     [this](const char **args, const ProgramArgs &a) {
-                    crcOutputFile = fopen(args[0], "wt");
+                    crcOutputFileName = args[0];
                     return true;
                 }},
             {"--crcinit", nullptr, 1, "Initial value of the CRC separated by a comma, a set of CRCs can be specified with this commandline parameter",
@@ -347,7 +349,7 @@ struct ProgramConfig {
                     std::cerr << "Missing arguments for \"" << argv[i] << "\"" << std::endl;
                     exit(EXIT_FAILURE);
                 }
-                disableValueCheck = true; 
+                disableValueCheck = true;
                 i++;
             }
 
@@ -385,10 +387,6 @@ struct ProgramConfig {
                 }
 
                 crcInitValue.push_back(0);
-            }
-
-            if (crcOutputFile == nullptr) {
-                crcOutputFile = stdout;
             }
         }
     }
@@ -433,7 +431,7 @@ struct ProgramConfig {
         return deviceUUID.empty() ? nullptr : deviceUUID.data();
     }
 
-    FILE* crcOutputFile;
+    std::string crcOutputFileName;
     std::string appName;
     std::basic_string<uint8_t> deviceUUID;
     int initialWidth;
@@ -456,11 +454,9 @@ struct ProgramConfig {
     int queueId;
     VkVideoCodecOperationFlagBitsKHR forceParserType;
     std::vector<uint32_t> crcInitValue;
-    uint32_t *crcValues;
     uint32_t deviceId;
     uint32_t decoderQueueSize;
     int32_t enablePostProcessFilter;
-    uint32_t *crcOutput;
     uint32_t enableStreamDemuxing : 1;
     uint32_t directMode : 1;
     uint32_t vsync : 1;

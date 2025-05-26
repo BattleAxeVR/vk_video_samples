@@ -17,32 +17,40 @@
 #ifndef _VULKANVIDEOPROCESSOR_H_
 #define _VULKANVIDEOPROCESSOR_H_
 
+#include "DecoderConfig.h"
 #include "VkDecoderUtils/VideoStreamDemuxer.h"
 #include "VkVideoDecoder/VkVideoDecoder.h"
-#include "VkCodecUtils/VkVideoFrameToFile.h"
-#include "VkCodecUtils/ProgramConfig.h"
 #include "VkCodecUtils/VkVideoQueue.h"
+#include "VkVideoFrameOutput.h"
 
 class VulkanVideoProcessor : public VkVideoQueue<VulkanDecodedFrame> {
 public:
 
-    virtual bool IsValid(void)    const { return m_vkVideoDecoder; }
     virtual int32_t GetWidth()    const;
     virtual int32_t GetHeight()   const;
     virtual int32_t GetBitDepth() const;
 	virtual float GetFrameRate() const;
 	virtual bool StreamHasEnded() const;
 	virtual bool Seek(int stream_index, int64_t timestamp, int flags);
-    virtual VkFormat GetFrameImageFormat(int32_t* pWidth = NULL, int32_t* pHeight = NULL, int32_t* pBitDepth = NULL)  const;
+
+    virtual VkVideoProfileInfoKHR GetVkProfile() const;
+    virtual uint32_t GetProfileIdc() const;
+    virtual VkFormat GetFrameImageFormat()  const;
+    virtual VkExtent3D GetVideoExtent() const;
+
     virtual int32_t GetNextFrame(VulkanDecodedFrame* pFrame, bool* endOfStream);
     virtual int32_t ReleaseFrame(VulkanDecodedFrame* pDisplayedFrame);
 
     static VkSharedBaseObj<VulkanVideoProcessor>& invalidVulkanVideoProcessor;
 
-    static VkResult Create(const ProgramConfig& settings, const VulkanDeviceContext* vkDevCtx,
+    static VkResult Create(const DecoderConfig& settings, const VulkanDeviceContext* vkDevCtx,
                            VkSharedBaseObj<VulkanVideoProcessor>& vulkanVideoProcessor = invalidVulkanVideoProcessor);
 
-    int32_t Initialize(const VulkanDeviceContext* vkDevCtx, ProgramConfig& programConfig);
+    int32_t Initialize(const VulkanDeviceContext* vkDevCtx,
+                       VkSharedBaseObj<VideoStreamDemuxer>& videoStreamDemuxer,
+                       VkSharedBaseObj<VkVideoFrameOutput>& frameToFile,
+                       DecoderConfig& programConfig);
+
     void Deinit();
 
     virtual int32_t AddRef()
@@ -65,23 +73,23 @@ public:
     int32_t ParserProcessNextDataChunk();
 
     size_t OutputFrameToFile(VulkanDecodedFrame* pFrame);
-    void Restart(void);
+    uint32_t Restart(int64_t& bitstreamOffset);
 
 private:
 
-    VulkanVideoProcessor(const ProgramConfig& settings, const VulkanDeviceContext* vkDevCtx)
+    VulkanVideoProcessor(const DecoderConfig& settings, const VulkanDeviceContext* vkDevCtx)
         : m_refCount(0),
           m_vkDevCtx(vkDevCtx),
           m_videoStreamDemuxer()
         , m_vkVideoFrameBuffer()
         , m_vkVideoDecoder()
         , m_vkParser()
+        , m_frameToFile()
         , m_currentBitstreamOffset(0)
         , m_videoFrameNum(0)
         , m_videoStreamsCompleted(false)
         , m_usesStreamDemuxer(false)
         , m_usesFramePreparser(false)
-        , m_frameToFile()
         , m_loopCount(1)
         , m_startFrame(0)
         , m_maxFrameCount(-1)
@@ -105,26 +113,22 @@ private:
     bool StreamCompleted();
 
 private:
-    void WaitForFrameCompletion(VulkanDecodedFrame* pFrame, 
-                                VkSharedBaseObj<VkImageResource>& imageResource);
-
-private:
     std::atomic<int32_t>       m_refCount;
     const VulkanDeviceContext* m_vkDevCtx;
     VkSharedBaseObj<VideoStreamDemuxer> m_videoStreamDemuxer;
     VkSharedBaseObj<VulkanVideoFrameBuffer> m_vkVideoFrameBuffer;
     VkSharedBaseObj<VkVideoDecoder> m_vkVideoDecoder;
     VkSharedBaseObj<IVulkanVideoParser> m_vkParser;
+    VkSharedBaseObj<VkVideoFrameOutput> m_frameToFile;
     int64_t  m_currentBitstreamOffset;
     uint32_t m_videoFrameNum;
     uint32_t m_videoStreamsCompleted : 1;
     uint32_t m_usesStreamDemuxer : 1;
     uint32_t m_usesFramePreparser : 1;
-    VkVideoFrameToFile m_frameToFile;
     int32_t   m_loopCount;
     uint32_t  m_startFrame;
     int32_t   m_maxFrameCount;
-    const ProgramConfig& m_settings;
+    const DecoderConfig& m_settings;
 };
 
 #endif /* _VULKANVIDEOPROCESSOR_H_ */

@@ -84,7 +84,7 @@ VkResult EncoderConfigH265::InitDeviceCapabilities(const VulkanDeviceContext* vk
     }
 
     if (verboseMsg) {
-        std::cout << "\t\t\t" << VkVideoCoreProfile::CodecToName(codec) << "encode capabilities: " << std::endl;
+        std::cout << "\t\t" << VkVideoCoreProfile::CodecToName(codec) << "encode capabilities: " << std::endl;
         std::cout << "\t\t\t" << "minBitstreamBufferOffsetAlignment: " << videoCapabilities.minBitstreamBufferOffsetAlignment << std::endl;
         std::cout << "\t\t\t" << "minBitstreamBufferSizeAlignment: " << videoCapabilities.minBitstreamBufferSizeAlignment << std::endl;
         std::cout << "\t\t\t" << "pictureAccessGranularity: " << videoCapabilities.pictureAccessGranularity.width << " x " << videoCapabilities.pictureAccessGranularity.height << std::endl;
@@ -95,14 +95,62 @@ VkResult EncoderConfigH265::InitDeviceCapabilities(const VulkanDeviceContext* vk
         std::cout << "\t\t\t" << "maxBPictureL0ReferenceCount: " << h265EncodeCapabilities.maxBPictureL0ReferenceCount << std::endl;
     }
 
+    result = VulkanVideoCapabilities::GetPhysicalDeviceVideoEncodeQualityLevelProperties<VkVideoEncodeH265QualityLevelPropertiesKHR, VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_QUALITY_LEVEL_PROPERTIES_KHR>
+                                                                                (vkDevCtx, videoCoreProfile, qualityLevel,
+                                                                                 qualityLevelProperties,
+                                                                                 h265QualityLevelProperties);
+    if (result != VK_SUCCESS) {
+        std::cout << "*** Could not get Video Encode QualityLevel Properties :" << result << " ***" << std::endl;
+        assert(!"Could not get Video Encode QualityLevel Properties");
+        return result;
+    }
+
+    if (verboseMsg) {
+        std::cout << "\t\t" << VkVideoCoreProfile::CodecToName(codec) << "encode quality level properties: " << std::endl;
+        std::cout << "\t\t\t" << "preferredRateControlMode : " << qualityLevelProperties.preferredRateControlMode << std::endl;
+        std::cout << "\t\t\t" << "preferredRateControlLayerCount : " << qualityLevelProperties.preferredRateControlLayerCount << std::endl;
+        std::cout << "\t\t\t" << "preferredRateControlFlags : " << h265QualityLevelProperties.preferredRateControlFlags << std::endl;
+        std::cout << "\t\t\t" << "preferredGopFrameCount : " << h265QualityLevelProperties.preferredGopFrameCount << std::endl;
+        std::cout << "\t\t\t" << "preferredIdrPeriod : " << h265QualityLevelProperties.preferredIdrPeriod << std::endl;
+        std::cout << "\t\t\t" << "preferredConsecutiveBFrameCount : " << h265QualityLevelProperties.preferredConsecutiveBFrameCount << std::endl;
+        std::cout << "\t\t\t" << "preferredSubLayerCount : " << h265QualityLevelProperties.preferredSubLayerCount << std::endl;
+        std::cout << "\t\t\t" << "preferredConstantQp.qpI : " << h265QualityLevelProperties.preferredConstantQp.qpI << std::endl;
+        std::cout << "\t\t\t" << "preferredConstantQp.qpP : " << h265QualityLevelProperties.preferredConstantQp.qpP << std::endl;
+        std::cout << "\t\t\t" << "preferredConstantQp.qpB : " << h265QualityLevelProperties.preferredConstantQp.qpB << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxL0ReferenceCount : " << h265QualityLevelProperties.preferredMaxL0ReferenceCount << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxL1ReferenceCount : " << h265QualityLevelProperties.preferredMaxL1ReferenceCount << std::endl;
+    }
+
+    if (rateControlMode == VK_VIDEO_ENCODE_RATE_CONTROL_MODE_FLAG_BITS_MAX_ENUM_KHR) {
+        rateControlMode = qualityLevelProperties.preferredRateControlMode;
+    }
+    if (gopStructure.GetGopFrameCount() == ZERO_GOP_FRAME_COUNT) {
+        gopStructure.SetGopFrameCount(h265QualityLevelProperties.preferredGopFrameCount);
+    }
+    if (gopStructure.GetIdrPeriod() == ZERO_GOP_IDR_PERIOD) {
+        gopStructure.SetIdrPeriod(h265QualityLevelProperties.preferredIdrPeriod);
+    }
+    if (gopStructure.GetConsecutiveBFrameCount() == CONSECUTIVE_B_FRAME_COUNT_MAX_VALUE) {
+        gopStructure.SetConsecutiveBFrameCount(h265QualityLevelProperties.preferredConsecutiveBFrameCount);
+    }
+    if (constQp.qpIntra == 0) {
+        constQp.qpIntra = h265QualityLevelProperties.preferredConstantQp.qpI;
+    }
+    if (constQp.qpInterP == 0) {
+        constQp.qpInterP = h265QualityLevelProperties.preferredConstantQp.qpP;
+    }
+    if (constQp.qpInterB == 0) {
+        constQp.qpInterB = h265QualityLevelProperties.preferredConstantQp.qpB;
+    }
+    numRefL0 = h265QualityLevelProperties.preferredMaxL0ReferenceCount;
+    numRefL1 = h265QualityLevelProperties.preferredMaxL1ReferenceCount;
+
     return VK_SUCCESS;
 }
 
 int8_t EncoderConfigH265::InitDpbCount()
 {
-    if (dpbCount < 1) {
-        dpbCount = (gopStructure.GetConsecutiveBFrameCount() > 0) ? gopStructure.GetConsecutiveBFrameCount() : ((numRefL0 > 1) ? 2 : 1);
-    }
+    dpbCount = 5;
 
     return VerifyDpbSize();
 }
@@ -362,7 +410,7 @@ void EncoderConfigH265::InitializeSpsRefPicSet(SpsH265 *pSps)
 
     // Set number of backward references
     pSps->shortTermRefPicSet.num_negative_pics = pSps->decPicBufMgr.max_dec_pic_buffering_minus1[0];
-    mask = (1 << pSps->shortTermRefPicSet.num_negative_pics) - 1;
+    mask = (1 << std::min(pSps->shortTermRefPicSet.num_negative_pics, numRefL0)) - 1;
     assert((mask & (1 << MAX_NUM_REF_PICS)) == 0); // assert that we're not using more than 15 references.
     pSps->shortTermRefPicSet.used_by_curr_pic_s0_flag = (uint16_t)mask;
 
@@ -382,6 +430,7 @@ void EncoderConfigH265::InitializeSpsRefPicSet(SpsH265 *pSps)
 StdVideoH265ProfileTierLevel EncoderConfigH265::GetLevelTier()
 {
     StdVideoH265ProfileTierLevel profileTierLevel{};
+    profileTierLevel.general_profile_idc = STD_VIDEO_H265_PROFILE_IDC_INVALID;
     profileTierLevel.general_level_idc = STD_VIDEO_H265_LEVEL_IDC_INVALID;
     uint32_t levelIdx = 0;
     for (; levelIdx < levelLimitsTblSize; levelIdx++) {
@@ -537,7 +586,17 @@ bool EncoderConfigH265::InitParamameters(VpsH265 *vpsInfo, SpsH265 *spsInfo,
 
     // Assigning default main profile if invalid.
     if (spsInfo->profileTierLevel.general_profile_idc == STD_VIDEO_H265_PROFILE_IDC_INVALID) {
-        spsInfo->profileTierLevel.general_profile_idc = STD_VIDEO_H265_PROFILE_IDC_MAIN;
+        if (encodeChromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR) {
+            if (input.bpp == 8) {
+                spsInfo->profileTierLevel.general_profile_idc = STD_VIDEO_H265_PROFILE_IDC_MAIN;
+            } else if (input.bpp == 10) {
+                spsInfo->profileTierLevel.general_profile_idc = STD_VIDEO_H265_PROFILE_IDC_MAIN_10;
+            } else {
+                spsInfo->profileTierLevel.general_profile_idc = STD_VIDEO_H265_PROFILE_IDC_FORMAT_RANGE_EXTENSIONS;
+            }
+        } else {
+            spsInfo->profileTierLevel.general_profile_idc = STD_VIDEO_H265_PROFILE_IDC_FORMAT_RANGE_EXTENSIONS;
+        }
     }
 
     const uint32_t ctbLog2SizeY = cuSize + 3;
@@ -620,8 +679,8 @@ bool EncoderConfigH265::InitParamameters(VpsH265 *vpsInfo, SpsH265 *spsInfo,
                   << std::endl;
     }
 
-    uint32_t subWidthC  = (encodeChromaSubsampling == 3) ? 1 : 2;
-    uint32_t subHeightC = (encodeChromaSubsampling == 3) ? 1 : 2;
+    uint32_t subWidthC  = (encodeChromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR) ? 1 : 2;
+    uint32_t subHeightC = (encodeChromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR) ? 1 : 2;
     spsInfo->sps.conf_win_left_offset   = 0;
     spsInfo->sps.conf_win_right_offset  = (picWidthAlignedToMinCbsY - encodeWidth) / subWidthC;
     spsInfo->sps.conf_win_top_offset    = 0;
@@ -672,7 +731,7 @@ bool EncoderConfigH265::InitParamameters(VpsH265 *vpsInfo, SpsH265 *spsInfo,
     pps->flags.pps_slice_chroma_qp_offsets_present_flag = 0;
     pps->flags.weighted_pred_flag = 0;
     pps->flags.weighted_bipred_flag = 0;
-    pps->flags.transquant_bypass_enabled_flag = false; // TODO: true for lossless
+    pps->flags.transquant_bypass_enabled_flag = (tuningMode == VK_VIDEO_ENCODE_TUNING_MODE_LOSSLESS_KHR) ? 1 : 0;
     pps->flags.tiles_enabled_flag = 0;
     pps->flags.entropy_coding_sync_enabled_flag = 0;
     pps->flags.uniform_spacing_flag = 0;

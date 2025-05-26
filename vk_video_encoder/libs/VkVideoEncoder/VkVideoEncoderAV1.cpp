@@ -100,15 +100,17 @@ VkResult VkVideoEncoderAV1::InitEncoderCodec(VkSharedBaseObj<EncoderConfig>& enc
     // Initialize DPB
     m_dpbAV1 = VkEncDpbAV1::CreateInstance();
     assert(m_dpbAV1);
-    m_dpbAV1->DpbSequenceStart(encodeCaps, m_maxDpbPicturesCount, encoderConfig->gopStructure.GetConsecutiveBFrameCount());
+    m_dpbAV1->DpbSequenceStart(encodeCaps, m_maxDpbPicturesCount, encoderConfig->gopStructure.GetConsecutiveBFrameCount(),
+                               encoderConfig->tuningMode, encoderConfig->qualityLevel);
 
     m_encoderConfig->GetRateControlParameters(&m_rateControlInfo, m_rateControlLayersInfo, &m_stateAV1.m_rateControlInfoAV1, m_stateAV1.m_rateControlLayersInfoAV1);
 
-    m_encoderConfig->InitSequenceHeader(&m_stateAV1.m_sequenceHeader);
+    m_encoderConfig->InitSequenceHeader(&m_stateAV1.m_sequenceHeader, m_stateAV1.m_operatingPointsInfo);
 
     VideoSessionParametersInfoAV1 videoSessionParametersInfo(*m_videoSession, &m_stateAV1.m_sequenceHeader,
                                                           nullptr/*decoderModelInfo*/,
-                                                          1, nullptr /*operatingPointsInfo*/,
+                                                          1, m_stateAV1.m_operatingPointsInfo /*operatingPointsInfo*/,
+                                                          encoderConfig->qualityLevel,
                                                           encoderConfig->enableQpMap, m_qpMapTexelSize);
     VkVideoSessionParametersCreateInfoKHR* encodeSessionParametersCreateInfo = videoSessionParametersInfo.getVideoSessionParametersInfo();
     VkVideoSessionParametersKHR sessionParameters;
@@ -954,12 +956,29 @@ VkResult VkVideoEncoderAV1::AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeF
         }
 
         for (const auto& curIndex : m_batchFramesIndxSetToAssemble) {
-            if (frameIdx == curIndex) {
-                fwrite(data + encodeResult.bitstreamStartOffset, 1, encodeResult.bitstreamSize,
-                                   m_encoderConfig->outputFileHandler.GetFileHandle());
-            } else {
-                fwrite(m_bitstream[curIndex].data(), 1, m_bitstream[curIndex].size(),
-                                   m_encoderConfig->outputFileHandler.GetFileHandle());
+            const uint8_t* writeData = (frameIdx == curIndex) ? (data + encodeResult.bitstreamStartOffset) : m_bitstream[curIndex].data();
+            const size_t bytesToWrite = (frameIdx == curIndex) ? encodeResult.bitstreamSize : m_bitstream[curIndex].size();
+
+            // Write data in chunks to handle partial writes
+            size_t totalBytesWritten = 0;
+            while (totalBytesWritten < bytesToWrite) {
+                const size_t remainingBytes = bytesToWrite - totalBytesWritten;
+                const size_t bytesWritten = fwrite(writeData + totalBytesWritten, 1, 
+                                                 remainingBytes,
+                                                 m_encoderConfig->outputFileHandler.GetFileHandle());
+
+                if (bytesWritten == 0) {
+                    std::cerr << "Failed to write bitstream data" << std::endl;
+                    return VK_ERROR_OUT_OF_HOST_MEMORY;
+                }
+
+                totalBytesWritten += bytesWritten;
+            }
+
+            // Verify complete write
+            if (totalBytesWritten != bytesToWrite) {
+                std::cerr << "Warning: Incomplete write - expected " << bytesToWrite << " bytes but wrote " << totalBytesWritten << " bytes\n";
+                return VK_ERROR_OUT_OF_HOST_MEMORY;
             }
         }
         // reset the batch frames to assemble counter

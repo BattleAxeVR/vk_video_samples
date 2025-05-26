@@ -27,7 +27,7 @@ StdVideoH264LevelIdc EncoderConfigH264::DetermineLevel(uint8_t dpbSize,
         if ((frameSizeInMbs * frameRate) > levelLimits[idx].maxMBPS) continue;
 
         if ((frameSizeInMbs) > ((uint32_t)levelLimits[idx].maxFS)) continue;
-        if ((frameSizeInMbs * dpbSize * 384) > levelLimits[idx].maxDPB * 1024) continue;
+        if ((frameSizeInMbs * numRefFrames * 384) > levelLimits[idx].maxDPB * 1024) continue;
 
         if ((bitrate != 0) && (bitrate > ((uint32_t)levelLimits[idx].maxBR * 1200))) continue;
         if ((_vbvBufferSize != 0) && (_vbvBufferSize > ((uint32_t)levelLimits[idx].maxCPB * 1200))) continue;
@@ -208,7 +208,7 @@ bool EncoderConfigH264::InitSpsPpsParameters(StdVideoH264SequenceParameterSet *s
     }
 
     if (!!qpprime_y_zero_transform_bypass_flag &&
-        (profileIdc == STD_VIDEO_H264_PROFILE_IDC_HIGH_444_PREDICTIVE)) {
+        (tuningMode == VK_VIDEO_ENCODE_TUNING_MODE_LOSSLESS_KHR)) {
         sps->flags.qpprime_y_zero_transform_bypass_flag = true;
     }
 
@@ -222,14 +222,14 @@ bool EncoderConfigH264::InitSpsPpsParameters(StdVideoH264SequenceParameterSet *s
     sps->log2_max_frame_num_minus4 = 4;
     sps->log2_max_pic_order_cnt_lsb_minus4 = 4;
 
-    sps->max_num_ref_frames = dpbCount;
+    sps->max_num_ref_frames = numRefL0 + numRefL1;
 
     // Initialize PPS values
     pps->seq_parameter_set_id = sps->seq_parameter_set_id;
     pps->pic_parameter_set_id = ppsId;
     pps->weighted_bipred_idc = STD_VIDEO_H264_WEIGHTED_BIPRED_IDC_DEFAULT;
-    pps->num_ref_idx_l0_default_active_minus1 = (uint8_t)(((gopStructure.GetGopFrameCount() > dpbCount) ? dpbCount : gopStructure.GetGopFrameCount()) - 1);
-    pps->num_ref_idx_l1_default_active_minus1 = (gopStructure.GetConsecutiveBFrameCount() > 0) ? (uint8_t)(gopStructure.GetConsecutiveBFrameCount() - 1) : 0;
+    pps->num_ref_idx_l0_default_active_minus1 = numRefL0 > 0 ? numRefL0 - 1 : 0;
+    pps->num_ref_idx_l1_default_active_minus1 = numRefL1 > 0 ? numRefL1 - 1 : 0;
 
     if ((sps->chroma_format_idc == 3) && !sps->flags.qpprime_y_zero_transform_bypass_flag) {
         pps->chroma_qp_index_offset = pps->second_chroma_qp_index_offset = 6;
@@ -279,22 +279,7 @@ bool EncoderConfigH264::InitSpsPpsParameters(StdVideoH264SequenceParameterSet *s
 
     if (entropyCodingMode == ENTROPY_CODING_MODE_CABAC) {
         pps->flags.entropy_coding_mode_flag = true;
-    } else if (entropyCodingMode == ENTROPY_CODING_MODE_CAVLC) {
-        pps->flags.entropy_coding_mode_flag = false;
     } else {
-        // Autoselect
-        if (!bIsFastestPreset || transform_8x8_mode_is_supported) {
-            if ((profileIdc == STD_VIDEO_H264_PROFILE_IDC_INVALID) ||
-                (profileIdc >= STD_VIDEO_H264_PROFILE_IDC_MAIN)) {
-                // Unconditionally enable CABAC
-                pps->flags.entropy_coding_mode_flag = true;
-            }
-        }
-    }
-
-    // Don't allow setting CABAC with 4:4:4, because we don't support it.
-    // FIXME: obtain this condition via capability queries.
-    if (sps->chroma_format_idc == STD_VIDEO_H264_CHROMA_FORMAT_IDC_444) {
         pps->flags.entropy_coding_mode_flag = false;
     }
 
@@ -375,12 +360,69 @@ VkResult EncoderConfigH264::InitDeviceCapabilities(const VulkanDeviceContext* vk
         std::cout << "\t\t\t" << "maxBPictureL0ReferenceCount: " << h264EncodeCapabilities.maxBPictureL0ReferenceCount << std::endl;
     }
 
+    result = VulkanVideoCapabilities::GetPhysicalDeviceVideoEncodeQualityLevelProperties<VkVideoEncodeH264QualityLevelPropertiesKHR, VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_QUALITY_LEVEL_PROPERTIES_KHR>
+                                                                                (vkDevCtx, videoCoreProfile, qualityLevel,
+                                                                                 qualityLevelProperties,
+                                                                                 h264QualityLevelProperties);
+    if (result != VK_SUCCESS) {
+        std::cout << "*** Could not get Video Encode QualityLevel Properties :" << result << " ***" << std::endl;
+        assert(!"Could not get Video Encode QualityLevel Properties");
+        return result;
+    }
+
+    if (verboseMsg) {
+        std::cout << "\t\t" << VkVideoCoreProfile::CodecToName(codec) << "encode quality level properties: " << std::endl;
+        std::cout << "\t\t\t" << "preferredRateControlMode : " << qualityLevelProperties.preferredRateControlMode << std::endl;
+        std::cout << "\t\t\t" << "preferredRateControlLayerCount : " << qualityLevelProperties.preferredRateControlLayerCount << std::endl;
+        std::cout << "\t\t\t" << "preferredRateControlFlags : " << h264QualityLevelProperties.preferredRateControlFlags << std::endl;
+        std::cout << "\t\t\t" << "preferredGopFrameCount : " << h264QualityLevelProperties.preferredGopFrameCount << std::endl;
+        std::cout << "\t\t\t" << "preferredIdrPeriod : " << h264QualityLevelProperties.preferredIdrPeriod << std::endl;
+        std::cout << "\t\t\t" << "preferredConsecutiveBFrameCount : " << h264QualityLevelProperties.preferredConsecutiveBFrameCount << std::endl;
+        std::cout << "\t\t\t" << "preferredTemporalLayerCount : " << h264QualityLevelProperties.preferredTemporalLayerCount << std::endl;
+        std::cout << "\t\t\t" << "preferredConstantQp.qpI : " << h264QualityLevelProperties.preferredConstantQp.qpI << std::endl;
+        std::cout << "\t\t\t" << "preferredConstantQp.qpP : " << h264QualityLevelProperties.preferredConstantQp.qpP << std::endl;
+        std::cout << "\t\t\t" << "preferredConstantQp.qpB : " << h264QualityLevelProperties.preferredConstantQp.qpB << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxL0ReferenceCount : " << h264QualityLevelProperties.preferredMaxL0ReferenceCount << std::endl;
+        std::cout << "\t\t\t" << "preferredMaxL1ReferenceCount : " << h264QualityLevelProperties.preferredMaxL1ReferenceCount << std::endl;
+        std::cout << "\t\t\t" << "preferredStdEntropyCodingModeFlag : " << h264QualityLevelProperties.preferredStdEntropyCodingModeFlag << std::endl;
+    }
+
+    if (rateControlMode == VK_VIDEO_ENCODE_RATE_CONTROL_MODE_FLAG_BITS_MAX_ENUM_KHR) {
+        rateControlMode = qualityLevelProperties.preferredRateControlMode;
+    }
+    if (gopStructure.GetGopFrameCount() == ZERO_GOP_FRAME_COUNT) {
+        gopStructure.SetGopFrameCount(h264QualityLevelProperties.preferredGopFrameCount);
+    }
+    if (gopStructure.GetIdrPeriod() == ZERO_GOP_IDR_PERIOD) {
+        gopStructure.SetIdrPeriod(h264QualityLevelProperties.preferredIdrPeriod);
+    }
+    if (gopStructure.GetConsecutiveBFrameCount() == CONSECUTIVE_B_FRAME_COUNT_MAX_VALUE) {
+        gopStructure.SetConsecutiveBFrameCount(h264QualityLevelProperties.preferredConsecutiveBFrameCount);
+    }
+    if (constQp.qpIntra == 0) {
+        constQp.qpIntra = h264QualityLevelProperties.preferredConstantQp.qpI;
+    }
+    if (constQp.qpInterP == 0) {
+        constQp.qpInterP = h264QualityLevelProperties.preferredConstantQp.qpP;
+    }
+    if (constQp.qpInterB == 0) {
+        constQp.qpInterB = h264QualityLevelProperties.preferredConstantQp.qpB;
+    }
+    if (rateControlMode == VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR) {
+        minQp = h264QualityLevelProperties.preferredConstantQp;
+        maxQp = h264QualityLevelProperties.preferredConstantQp;
+    }
+    numRefL0 = h264QualityLevelProperties.preferredMaxL0ReferenceCount;
+    numRefL1 = h264QualityLevelProperties.preferredMaxL1ReferenceCount;
+    numRefFrames = numRefL0 + numRefL1;
+    entropyCodingMode = h264QualityLevelProperties.preferredStdEntropyCodingModeFlag == VK_TRUE ? ENTROPY_CODING_MODE_CABAC : ENTROPY_CODING_MODE_CAVLC;
+
     return VK_SUCCESS;
 }
 
 int8_t EncoderConfigH264::InitDpbCount()
 {
-    dpbCount = (gopStructure.GetConsecutiveBFrameCount() > 0) ? gopStructure.GetConsecutiveBFrameCount() : 1;
+    dpbCount = 0;
     // spsInfo->level represents the smallest level that we require for the
     // given stream. This level constrains the maximum size (in terms of
     // number of frames) that the DPB can have. levelDpbSize is this maximum

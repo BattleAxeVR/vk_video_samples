@@ -170,8 +170,24 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
     int yCbCrConvResult = 0;
     if (m_encoderConfig->input.bpp == 8) {
 
-        // Load current 8-bit frame from file and convert to NV12
-        yCbCrConvResult = YCbCrConvUtilsCpu<uint8_t>::I420ToNV12(
+        if (m_encoderConfig->encodeChromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR) {
+            // Load current 8-bit frame from file and convert to 2-plane YUV444
+            yCbCrConvResult = YCbCrConvUtilsCpu<uint8_t>::I444ToP444(
+                    pInputFrameData + m_encoderConfig->input.planeLayouts[0].offset,         // src_y
+                    (int)m_encoderConfig->input.planeLayouts[0].rowPitch,                    // src_stride_y
+                    pInputFrameData + m_encoderConfig->input.planeLayouts[1].offset,         // src_u
+                    (int)m_encoderConfig->input.planeLayouts[1].rowPitch,                    // src_stride_u
+                    pInputFrameData + m_encoderConfig->input.planeLayouts[2].offset,         // src_v
+                    (int)m_encoderConfig->input.planeLayouts[2].rowPitch,                    // src_stride_v
+                    writeImagePtr + dstSubresourceLayout[0].offset,                          // dst_y
+                    (int)dstSubresourceLayout[0].rowPitch,                                   // dst_stride_y
+                    writeImagePtr + dstSubresourceLayout[1].offset,                          // dst_uv
+                    (int)dstSubresourceLayout[1].rowPitch,                                   // dst_stride_uv
+                    std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),   // width
+                    std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height)); // height
+        } else {
+            // Load current 8-bit frame from file and convert to NV12
+            yCbCrConvResult = YCbCrConvUtilsCpu<uint8_t>::I420ToNV12(
                     pInputFrameData + m_encoderConfig->input.planeLayouts[0].offset,         // src_y,
                     (int)m_encoderConfig->input.planeLayouts[0].rowPitch,                    // src_stride_y,
                     pInputFrameData + m_encoderConfig->input.planeLayouts[1].offset,         // src_u,
@@ -184,6 +200,7 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
                     (int)dstSubresourceLayout[1].rowPitch,                                   // dst_stride_uv,
                     std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),   // width
                     std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height)); // height
+        }
 
     } else if (m_encoderConfig->input.bpp == 10) { // 10-bit - actually 16-bit only for now.
 
@@ -194,8 +211,25 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
             shiftBits = 16 - m_encoderConfig->input.bpp;
         }
 
-        // Load current 10-bit frame from file and convert to P010/P016
-        yCbCrConvResult = YCbCrConvUtilsCpu<uint16_t>::I420ToNV12(
+        if (m_encoderConfig->encodeChromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR) {
+            // Load current 10-bit frame from file and convert to 2-plane YUV444
+            yCbCrConvResult = YCbCrConvUtilsCpu<uint16_t>::I444ToP444(
+                    (const uint16_t*)(pInputFrameData + m_encoderConfig->input.planeLayouts[0].offset), // src_y
+                    (int)m_encoderConfig->input.planeLayouts[0].rowPitch,                               // src_stride_y
+                    (const uint16_t*)(pInputFrameData + m_encoderConfig->input.planeLayouts[1].offset), // src_u
+                    (int)m_encoderConfig->input.planeLayouts[1].rowPitch,                               // src_stride_u
+                    (const uint16_t*)(pInputFrameData + m_encoderConfig->input.planeLayouts[2].offset), // src_v
+                    (int)m_encoderConfig->input.planeLayouts[2].rowPitch,                               // src_stride_v
+                    (uint16_t*)(writeImagePtr + dstSubresourceLayout[0].offset),                        // dst_y
+                    (int)dstSubresourceLayout[0].rowPitch,                                              // dst_stride_y
+                    (uint16_t*)(writeImagePtr + dstSubresourceLayout[1].offset),                        // dst_uv
+                    (int)dstSubresourceLayout[1].rowPitch,                                              // dst_stride_uv
+                    std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),              // width
+                    std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height),             // height
+                    shiftBits);
+        } else {
+            // Load current 10-bit frame from file and convert to P010/P016
+            yCbCrConvResult = YCbCrConvUtilsCpu<uint16_t>::I420ToNV12(
                     (const uint16_t*)(pInputFrameData + m_encoderConfig->input.planeLayouts[0].offset), // src_y,
                     (int)m_encoderConfig->input.planeLayouts[0].rowPitch,                               // src_stride_y,
                     (const uint16_t*)(pInputFrameData + m_encoderConfig->input.planeLayouts[1].offset), // src_u,
@@ -209,6 +243,7 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
                     std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),              // width
                     std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height),             // height
                     shiftBits);
+        }
 
     } else {
         assert(!"Requested bit-depth is not supported!");
@@ -330,6 +365,11 @@ VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
     VkSharedBaseObj<VkImageResourceView> srcEncodeImageView;
     encodeFrameInfo->srcEncodeImageResource->GetImageView(srcEncodeImageView);
 
+    VkExtent2D copyImageExtent {
+        std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),
+        std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height)
+    };
+
     VkResult result;
     if (m_inputComputeFilter == nullptr) {
         VkImageLayout linearImgNewLayout = TransitionImageLayout(cmdBuf, linearInputImageView, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -337,20 +377,36 @@ VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
         (void)linearImgNewLayout;
         (void)srcImgNewLayout;
 
-        VkExtent2D copyImageExtent {
-            std::min(m_encoderConfig->encodeWidth,  m_encoderConfig->input.width),
-            std::min(m_encoderConfig->encodeHeight, m_encoderConfig->input.height)
-        };
-
         CopyLinearToOptimalImage(cmdBuf, linearInputImageView, srcEncodeImageView, copyImageExtent);
 
     } else {
 
+        VkVideoPictureResourceInfoKHR srcPictureResourceInfo(*encodeFrameInfo->srcStagingImageView->GetPictureResourceInfo());
+        VkVideoPictureResourceInfoKHR dstPictureResourceInfo(*encodeFrameInfo->srcEncodeImageResource->GetPictureResourceInfo());
+
+        srcPictureResourceInfo.codedExtent = copyImageExtent;
+
+        if (m_encoderConfig->enablePictureRowColReplication == 1) {
+            // replicate the last row and column to the padding area
+            dstPictureResourceInfo.codedExtent.width = m_encoderConfig->encodeAlignedWidth;
+            dstPictureResourceInfo.codedExtent.height = m_encoderConfig->encodeAlignedHeight;
+        } else if (m_encoderConfig->enablePictureRowColReplication == 2) {
+            // replicate only one row and one column to the padding area
+            if (dstPictureResourceInfo.codedExtent.width < m_encoderConfig->encodeAlignedWidth) {
+                dstPictureResourceInfo.codedExtent.width += 1;
+            }
+            if (dstPictureResourceInfo.codedExtent.height < m_encoderConfig->encodeAlignedHeight) {
+                dstPictureResourceInfo.codedExtent.height += 1;
+            }
+        } else {
+            // row and column replication is disabled. Don't touch the image padding area.
+            dstPictureResourceInfo.codedExtent = copyImageExtent;
+        }
         result = m_inputComputeFilter->RecordCommandBuffer(cmdBuf,
                                                            linearInputImageView,
-                                                           encodeFrameInfo->srcStagingImageView->GetPictureResourceInfo(),
+                                                           &srcPictureResourceInfo,
                                                            srcEncodeImageView,
-                                                           encodeFrameInfo->srcEncodeImageResource->GetPictureResourceInfo(),
+                                                           &dstPictureResourceInfo,
                                                            encodeFrameInfo->inputCmdBuffer->GetNodePoolIndex());
         if (result != VK_SUCCESS) {
             return result;
@@ -444,7 +500,7 @@ VkResult VkVideoEncoder::SubmitStagedInputFrame(VkSharedBaseObj<VkVideoEncodeFra
     if (syncCpuAfterStaging) {
         encodeFrameInfo->inputCmdBuffer->SyncHostOnCmdBuffComplete(false, "encoderStagedInputFence");
     }
-#ifdef ENCODER_DISPLAY_QUEUE_SUPPORT
+#ifdef VIDEO_DISPLAY_QUEUE_SUPPORT
     if (result == VK_SUCCESS) {
 
         if (m_displayQueue.IsValid()) {
@@ -456,8 +512,8 @@ VkResult VkVideoEncoder::SubmitStagedInputFrame(VkSharedBaseObj<VkVideoEncodeFra
             displayEncoderInputFrame.frameCompleteSemaphore = frameCompleteSemaphore;
             // displayEncoderInputFrame.frameCompleteFence = currentEncodeFrameData->m_frameCompleteFence;
             encodeFrameInfo->srcEncodeImageResource->GetImageView(
-                    displayEncoderInputFrame.imageViews[VulkanEncoderInputFrame::IMAGE_VIEW_TYPE_LINEAR].singleLevelView );
-            displayEncoderInputFrame.imageViews[VulkanEncoderInputFrame::IMAGE_VIEW_TYPE_LINEAR].inUse = true;
+                    displayEncoderInputFrame.imageViews[VulkanEncoderInputFrame::IMAGE_VIEW_TYPE_OPTIMAL_DISPLAY].singleLevelView );
+            displayEncoderInputFrame.imageViews[VulkanEncoderInputFrame::IMAGE_VIEW_TYPE_OPTIMAL_DISPLAY].inUse = true;
 
             // One can also look at the linear input instead
             // displayEncoderInputFrame.imageView = currentEncodeFrameData->m_linearInputImage;
@@ -467,7 +523,7 @@ VkResult VkVideoEncoder::SubmitStagedInputFrame(VkSharedBaseObj<VkVideoEncodeFra
             m_displayQueue.EnqueueFrame(&displayEncoderInputFrame);
         }
     }
-#endif // ENCODER_DISPLAY_QUEUE_SUPPORT
+#endif // VIDEO_DISPLAY_QUEUE_SUPPORT
     return result;
 }
 
@@ -539,11 +595,20 @@ VkResult VkVideoEncoder::AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFram
     VkDeviceSize maxSize;
     uint8_t* data = encodeFrameInfo->outputBitstreamBuffer->GetDataPtr(0, maxSize);
 
-    size_t vcl = fwrite(data + encodeResult.bitstreamStartOffset, 1, encodeResult.bitstreamSize,
-                        m_encoderConfig->outputFileHandler.GetFileHandle());
+    size_t totalBytesWritten = 0;
+    while (totalBytesWritten < encodeResult.bitstreamSize) { // handle partial writes
+        size_t remainingBytes = encodeResult.bitstreamSize - totalBytesWritten;
+        size_t bytesWritten = fwrite(data + encodeResult.bitstreamStartOffset + totalBytesWritten, 1, remainingBytes,
+                                    m_encoderConfig->outputFileHandler.GetFileHandle());
+        if (bytesWritten == 0) {
+            std::cerr << "Error writing VCL data" << std::endl;
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+        totalBytesWritten += bytesWritten;
+    }
 
     if (m_encoderConfig->verboseFrameStruct) {
-        std::cout << "       == Output VCL data " << (vcl ? "SUCCESS" : "FAIL") << " with size: " << encodeResult.bitstreamSize
+        std::cout << "       == Output VCL data " << ((totalBytesWritten == encodeResult.bitstreamSize) ? "SUCCESS" : "FAIL") << " with size: " << encodeResult.bitstreamSize
                   << " and offset: " << encodeResult.bitstreamStartOffset
                   << ", Input Order: " << encodeFrameInfo->gopPosition.inputOrder
                   << ", Encode  Order: " << encodeFrameInfo->gopPosition.encodeOrder << std::endl << std::flush;
@@ -568,6 +633,13 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     encoderConfig->InitVideoProfile();
 
     encoderConfig->InitDeviceCapabilities(m_vkDevCtx);
+
+    if (encoderConfig->qualityLevel >= encoderConfig->videoEncodeCapabilities.maxQualityLevels) {
+        std::cerr << "Quality level " << encoderConfig->qualityLevel
+                  << " is greater than the maximum supported quality level "
+                  << (encoderConfig->videoEncodeCapabilities.maxQualityLevels - 1) << std::endl;
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
 
     if (encoderConfig->useDpbArray == false &&
         (encoderConfig->videoCapabilities.flags & VK_VIDEO_CAPABILITY_SEPARATE_REFERENCE_IMAGES_BIT_KHR) == 0) {
@@ -686,7 +758,17 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         m_qpMapTiling = supportedQpMapTiling[0];
     }
 
+    encoderConfig->encodeWidth  = std::max(encoderConfig->encodeWidth,  encoderConfig->videoCapabilities.minCodedExtent.width);
+    encoderConfig->encodeHeight = std::max(encoderConfig->encodeHeight, encoderConfig->videoCapabilities.minCodedExtent.height);
+
+    encoderConfig->encodeWidth  = std::min(encoderConfig->encodeWidth,  encoderConfig->videoCapabilities.maxCodedExtent.width);
+    encoderConfig->encodeHeight = std::min(encoderConfig->encodeHeight, encoderConfig->videoCapabilities.maxCodedExtent.height);
+
     m_maxCodedExtent = { encoderConfig->encodeMaxWidth, encoderConfig->encodeMaxHeight }; // max coded size
+    m_streamBufferSize = std::max(m_minStreamBufferSize, (size_t)encoderConfig->input.fullImageSize); // use worst case size
+
+    encoderConfig->encodeAlignedWidth  = vk::alignedSize (encoderConfig->encodeWidth, encoderConfig->videoCapabilities.pictureAccessGranularity.width);
+    encoderConfig->encodeAlignedHeight = vk::alignedSize (encoderConfig->encodeHeight, encoderConfig->videoCapabilities.pictureAccessGranularity.height);
 
     const uint32_t maxActiveReferencePicturesCount = encoderConfig->videoCapabilities.maxActiveReferencePictures;
     const uint32_t maxDpbPicturesCount = std::min<uint32_t>(m_maxDpbPicturesCount, encoderConfig->videoCapabilities.maxDpbSlots);
@@ -1224,12 +1306,12 @@ VkResult VkVideoEncoder::CopyLinearToOptimalImage(VkCommandBuffer& commandBuffer
     copyRegion[0].dstSubresource.layerCount = 1;
     copyRegion[1].extent.width = copyRegion[0].extent.width;
     if (mpInfo->planesLayout.secondaryPlaneSubsampledX != 0) {
-        copyRegion[1].extent.width /= 2;
+        copyRegion[1].extent.width = (copyRegion[1].extent.width + 1) / 2;
     }
 
     copyRegion[1].extent.height = copyRegion[0].extent.height;
     if (mpInfo->planesLayout.secondaryPlaneSubsampledY != 0) {
-        copyRegion[1].extent.height /= 2;
+        copyRegion[1].extent.height = (copyRegion[1].extent.height + 1) / 2;
     }
 
     copyRegion[1].extent.depth = 1;
@@ -1688,9 +1770,9 @@ bool VkVideoEncoder::WaitForThreadsToComplete()
 
 int32_t VkVideoEncoder::DeinitEncoder()
 {
-#ifdef ENCODER_DISPLAY_QUEUE_SUPPORT
+#ifdef VIDEO_DISPLAY_QUEUE_SUPPORT
     m_displayQueue.Flush();
-#endif // ENCODER_DISPLAY_QUEUE_SUPPORT
+#endif // VIDEO_DISPLAY_QUEUE_SUPPORT
     m_lastDeferredFrame = nullptr;
 
     m_vkDevCtx->MultiThreadedQueueWaitIdle(VulkanDeviceContext::ENCODE, 0);
