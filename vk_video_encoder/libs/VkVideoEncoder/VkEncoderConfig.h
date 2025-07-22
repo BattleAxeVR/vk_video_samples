@@ -461,9 +461,8 @@ class EncoderOutputFileHandler
 {
 public:
     EncoderOutputFileHandler()
-    : m_fileName{},
-      m_fileHandle(),
-      m_memMapedFile()
+    : m_fileName{}
+    , m_fileHandle()
     {
 
     }
@@ -475,10 +474,6 @@ public:
 
     void Destroy()
     {
-        std::error_code ec;
-        m_memMapedFile.sync(ec);
-        m_memMapedFile.unmap();
-
         if (m_fileHandle != nullptr) {
             if(fclose(m_fileHandle)) {
                 fprintf(stderr, "Failed to close output file %s", m_fileName);
@@ -534,14 +529,9 @@ private:
         return 1;
     }
 
-    size_t GetFileSize() const {
-        return m_memMapedFile.length();
-    }
-
 private:
     char  m_fileName[256];
     FILE* m_fileHandle;
-    mio::basic_mmap<mio::access_mode::write, uint8_t> m_memMapedFile;
 };
 
 
@@ -672,7 +662,7 @@ private:
 
 public:
     std::string appName;
-    std::basic_string<uint8_t> deviceUUID;
+    vk::DeviceUuidUtils deviceUUID;
     int32_t  deviceId;
     int32_t  queueId;
     VkVideoCodecOperationFlagBitsKHR codec;
@@ -759,7 +749,6 @@ public:
     uint32_t verboseMsg : 1;
     uint32_t enableFramePresent : 1;
     uint32_t enableFrameDirectModePresent : 1;
-    uint32_t enableVideoDecoder : 1;
     uint32_t enableHwLoadBalancing : 1;
     uint32_t selectVideoWithComputeQueue : 1;
     uint32_t enablePreprocessComputeFilter : 1;
@@ -852,7 +841,6 @@ public:
     , verboseMsg(false)
     , enableFramePresent(false)
     , enableFrameDirectModePresent(false)
-    , enableVideoDecoder(false)
     , enableHwLoadBalancing(false)
     , selectVideoWithComputeQueue(false)
     , enablePreprocessComputeFilter(true)
@@ -877,46 +865,6 @@ public:
         return ret;
     }
 
-    // Assuming we have the length as a parameter:
-    size_t SetDeviceUUID(const uint8_t* pDeviceUuid, size_t length) {
-
-        if ((pDeviceUuid == nullptr) || (length == 0)) {
-            deviceUUID.clear();
-        }
-
-        deviceUUID.assign(pDeviceUuid, pDeviceUuid + length);
-        return length;
-    }
-
-    // If deviceUuid is null-terminated (less common for binary data):
-    size_t SetDeviceUUID(const uint8_t* pDeviceUuid) {
-        size_t length = strlen(reinterpret_cast<const char*>(pDeviceUuid));
-        return SetDeviceUUID(pDeviceUuid, length);
-    }
-
-    size_t SetHexDeviceUUID(const char* pDeviceUuid) {
-
-        size_t deviceUuidLen = strnlen(pDeviceUuid, (VK_UUID_SIZE * 2));
-
-        if (deviceUuidLen <  (VK_UUID_SIZE * 2)) {
-            return 0;
-        }
-
-        deviceUUID.clear();
-        for (size_t i = 0; i < VK_UUID_SIZE; ++i) {
-            uint8_t hexByte = 0;
-            sscanf(pDeviceUuid, "%2hhx", &hexByte);
-            deviceUUID.push_back(hexByte);
-            pDeviceUuid += 2;
-        }
-
-        return VK_UUID_SIZE;
-    }
-
-    const uint8_t* GetDeviceUUID() const {
-        return deviceUUID.empty() ? nullptr : deviceUUID.data();
-    }
-
     virtual EncoderConfigH264* GetEncoderConfigh264() {
         return nullptr;
     }
@@ -930,13 +878,23 @@ public:
     }
 
     // Factory Function
-    static VkResult CreateCodecConfig(int argc, char *argv[], VkSharedBaseObj<EncoderConfig>& encoderConfig);
+    static VkResult CreateCodecConfig(int argc, const char *argv[], VkSharedBaseObj<EncoderConfig>& encoderConfig);
 
     void InitVideoProfile();
 
-    int ParseArguments(int argc, char *argv[]);
+    int ParseArguments(int argc, const char *argv[]);
 
-    virtual int DoParseArguments(int argc, char *argv[]) { return 0; };
+    virtual int DoParseArguments(int argc, const char *argv[]) {
+        if (argc > 0) {
+            std::cout << "Invalid paramters: ";
+            for (int i = 0; i < argc; i++) {
+                std::cout << argv[i] << " ";
+            }
+            std::cout << std::endl;
+            return -1;
+        }
+        return 0;
+    };
 
     virtual VkResult InitializeParameters()
     {

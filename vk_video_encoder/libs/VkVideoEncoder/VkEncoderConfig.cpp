@@ -19,7 +19,7 @@
 #include "VkVideoEncoder/VkEncoderConfigH265.h"
 #include "VkVideoEncoder/VkEncoderConfigAV1.h"
 
-void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
+static void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
 {
     fprintf(stderr,
     "Usage : EncodeApp \n\
@@ -65,7 +65,8 @@ void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
     --qpB                           <integer> : QP or QIndex (for AV1) used for B-frames when RC disabled\n\
     --deviceID                      <hexadec> : deviceID to be used, \n\
     --deviceUuid                    <string>  : deviceUuid to be used \n\
-    --testOutOfOrderRecording      Testing only: enable testing for out-of-order-recording\n");
+    --enableHwLoadBalancing                   : enables HW load balancing using multiple encoder devices when available \n\
+    --testOutOfOrderRecording                 : Testing only - enable testing for out-of-order-recording\n");
 
     if ((codec == VK_VIDEO_CODEC_OPERATION_NONE_KHR) || (codec == VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR)) {
         fprintf(stderr, "\nH264 specific arguments: None\n");
@@ -128,10 +129,10 @@ void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
         }
 }
 
-int EncoderConfig::ParseArguments(int argc, char *argv[])
+int EncoderConfig::ParseArguments(int argc, const char *argv[])
 {
     int argcount = 0;
-    std::vector<char*> arglist;
+    std::vector<const char*> arglist;
     std::vector<std::string> args(argv, argv + argc);
     uint32_t frameCount = 0;
 
@@ -440,7 +441,7 @@ int EncoderConfig::ParseArguments(int argc, char *argv[])
                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
                return -1;
             }
-            size_t size = SetHexDeviceUUID(args[i].c_str());
+            size_t size = deviceUUID.StringToUUID(args[i].c_str());
             if (size != VK_UUID_SIZE) {
                 fprintf(stderr,"Invalid deviceUuid format used: %s with size: %zu."
                                "deviceUuid must be represented by 16 hex (32 bytes) values.", args[i].c_str(), args[i].length());
@@ -470,13 +471,16 @@ int EncoderConfig::ParseArguments(int argc, char *argv[])
                 return (int)fileSize;
             }
             enableQpMap = true;
+        } else if (args[i] == "--enableHwLoadBalancing") {
+            // Enables HW load balancing using multiple encoders devices when available
+            enableHwLoadBalancing = true;
         } else if (args[i] == "--testOutOfOrderRecording") {
             // Testing only - don't use this feature for production!
             fprintf(stdout, "Warning: %s should only be used for testing!\n", args[i].c_str());
             enableOutOfOrderRecording = true;
         } else {
             argcount++;
-            arglist.push_back((char*)args[i].c_str());
+            arglist.push_back(args[i].c_str());
         }
     }
 
@@ -569,7 +573,7 @@ int EncoderConfig::ParseArguments(int argc, char *argv[])
     return DoParseArguments(argcount, arglist.data());
 }
 
-VkResult EncoderConfig::CreateCodecConfig(int argc, char *argv[],
+VkResult EncoderConfig::CreateCodecConfig(int argc, const char *argv[],
                                           VkSharedBaseObj<EncoderConfig>& encoderConfig)
 {
 

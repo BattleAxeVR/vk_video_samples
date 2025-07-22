@@ -104,7 +104,12 @@ int main(int argc, const char** argv)
     std::cout << "Enter decoder test" << std::endl;
 
     DecoderConfig decoderConfig(argv[0]);
-    decoderConfig.ParseArgs(argc, argv);
+    bool configResult = decoderConfig.ParseArgs(argc, argv);
+    if (!configResult && (decoderConfig.help == true)) {
+        return 0;
+    } else if (!configResult) {
+        return -1;
+    }
 
     switch (decoderConfig.forceParserType)
     {
@@ -113,6 +118,8 @@ int main(int argc, const char** argv)
         case VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR:
             break;
         case VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR:
+            break;
+        case VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR:
             break;
         default:
             std::cout << "Simple decoder does not support demuxing "

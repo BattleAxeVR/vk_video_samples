@@ -29,10 +29,15 @@
 #include "VkCodecUtils/Helpers.h"
 #include "VkCodecUtils/VulkanDeviceContext.h"
 #include "VkVideoCore/VulkanVideoCapabilities.h"
+#include "VkVideoCore/VkVideoCoreProfile.h"
 #include "VulkanVideoProcessor.h"
 #include "vulkan_interfaces.h"
 #include "nvidia_utils/vulkan/ycbcrvkinfo.h"
 #include "crcgenerator.h"
+
+size_t ConvertFrameToNv12(const VulkanDeviceContext* vkDevCtx, int32_t frameWidth, int32_t frameHeight,
+                         VkSharedBaseObj<VkImageResource>& imageResource,
+                         uint8_t* pOutBuffer, const VkMpFormatInfo* mpInfo);
 
 int32_t VulkanVideoProcessor::Initialize(const VulkanDeviceContext* vkDevCtx,
                                          VkSharedBaseObj<VideoStreamDemuxer>& videoStreamDemuxer,
@@ -116,11 +121,13 @@ int32_t VulkanVideoProcessor::Initialize(const VulkanDeviceContext* vkDevCtx,
         fprintf(stderr, "\nERROR: Create VkVideoDecoder result: 0x%x\n", result);
     }
 
-    VkVideoCoreProfile videoProfile(m_videoStreamDemuxer->GetVideoCodec(),
-                                    m_videoStreamDemuxer->GetChromaSubsampling(),
-                                    m_videoStreamDemuxer->GetLumaBitDepth(),
-                                    m_videoStreamDemuxer->GetChromaBitDepth(),
-                                    m_videoStreamDemuxer->GetProfileIdc());
+    VkVideoCoreProfile videoProfile ({
+        m_videoStreamDemuxer->GetVideoCodec(),
+        m_videoStreamDemuxer->GetChromaSubsampling(),
+        m_videoStreamDemuxer->GetLumaBitDepth(),
+        m_videoStreamDemuxer->GetChromaBitDepth(),
+        m_videoStreamDemuxer->GetProfileIdc()
+    });
 
     if (!VulkanVideoCapabilities::IsCodecTypeSupported(vkDevCtx,
                                                        vkDevCtx->GetVideoDecodeQueueFamilyIdx(),
@@ -174,12 +181,11 @@ VkResult VulkanVideoProcessor::Create(const DecoderConfig& settings, const Vulka
 
 VkVideoProfileInfoKHR VulkanVideoProcessor::GetVkProfile() const
 {
-
-    VkVideoProfileInfoKHR videoProfile({VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR, NULL,
+    VkVideoProfileInfoKHR videoProfile {VK_STRUCTURE_TYPE_VIDEO_PROFILE_INFO_KHR, NULL,
                                         m_videoStreamDemuxer->GetVideoCodec(),
                                         m_videoStreamDemuxer->GetChromaSubsampling(),
                                         m_videoStreamDemuxer->GetLumaBitDepth(),
-                                        m_videoStreamDemuxer->GetChromaBitDepth()});
+                                        m_videoStreamDemuxer->GetChromaBitDepth()};
 
     return videoProfile;
 }
@@ -209,10 +215,10 @@ VkFormat VulkanVideoProcessor::GetFrameImageFormat()  const
 
 VkExtent3D VulkanVideoProcessor::GetVideoExtent() const
 {
-    VkExtent3D extent ({ (uint32_t)m_videoStreamDemuxer->GetWidth(),
-                         (uint32_t)m_videoStreamDemuxer->GetHeight(),
-                         (uint32_t)1
-                       });
+    VkExtent3D extent { (uint32_t)m_videoStreamDemuxer->GetWidth(),
+                        (uint32_t)m_videoStreamDemuxer->GetHeight(),
+                        (uint32_t)1
+                      };
     return extent;
 }
 
@@ -396,6 +402,7 @@ size_t ConvertFrameToNv12(const VulkanDeviceContext *vkDevCtx, int32_t frameWidt
     const uint8_t* readImagePtr = srcImageDeviceMemory->GetReadOnlyDataPtr(imageOffset, maxSize);
     assert(readImagePtr != nullptr);
 
+    int32_t secondaryPlaneWidth = frameWidth;
     int32_t secondaryPlaneHeight = frameHeight;
     int32_t imageHeight = frameHeight;
     bool isUnnormalizedRgba = false;
@@ -403,6 +410,9 @@ size_t ConvertFrameToNv12(const VulkanDeviceContext *vkDevCtx, int32_t frameWidt
         isUnnormalizedRgba = true;
     }
 
+    if (mpInfo && mpInfo->planesLayout.secondaryPlaneSubsampledX) {
+        secondaryPlaneWidth = (secondaryPlaneWidth + 1) / 2;
+    }
     if (mpInfo && mpInfo->planesLayout.secondaryPlaneSubsampledY) {
         secondaryPlaneHeight = (secondaryPlaneHeight + 1) / 2;
     }
@@ -453,15 +463,9 @@ size_t ConvertFrameToNv12(const VulkanDeviceContext *vkDevCtx, int32_t frameWidt
     yuvPlaneLayouts[0].offset = 0;
     yuvPlaneLayouts[0].rowPitch = frameWidth * bytesPerPixel;
     yuvPlaneLayouts[1].offset = yuvPlaneLayouts[0].rowPitch * frameHeight;
-    yuvPlaneLayouts[1].rowPitch = frameWidth * bytesPerPixel;
-    if (mpInfo && mpInfo->planesLayout.secondaryPlaneSubsampledX) {
-        yuvPlaneLayouts[1].rowPitch = (yuvPlaneLayouts[1].rowPitch + 1) / 2;
-    }
+    yuvPlaneLayouts[1].rowPitch = secondaryPlaneWidth * bytesPerPixel;
     yuvPlaneLayouts[2].offset = yuvPlaneLayouts[1].offset + (yuvPlaneLayouts[1].rowPitch * secondaryPlaneHeight);
-    yuvPlaneLayouts[2].rowPitch = frameWidth * bytesPerPixel;
-    if (mpInfo && mpInfo->planesLayout.secondaryPlaneSubsampledX) {
-        yuvPlaneLayouts[2].rowPitch = (yuvPlaneLayouts[2].rowPitch + 1) / 2;
-    }
+    yuvPlaneLayouts[2].rowPitch = secondaryPlaneWidth * bytesPerPixel;
 
     // Copy the luma plane, always assume the 422 or 444 formats and src CbCr always is interleaved (shares the same plane).
     uint32_t numCompatiblePlanes = 1;
@@ -532,7 +536,9 @@ bool VulkanVideoProcessor::StreamCompleted()
         Restart(bitstreamOffset);
         return false;
     } else {
+#if !defined(VK_VIDEO_NO_STDOUT_INFO)
         std::cout << "End of Video Stream with status  " << VK_SUCCESS << std::endl;
+#endif
         return true;
     }
 }
@@ -598,7 +604,9 @@ int32_t VulkanVideoProcessor::GetNextFrame(VulkanDecodedFrame* pFrame, bool* end
     if (framesInQueue) {
 
         if (m_videoFrameNum == 0) {
+#if !defined(VK_VIDEO_NO_STDOUT_INFO)
             DumpVideoFormat(m_vkVideoDecoder->GetVideoFormatInfo(), true);
+#endif
         }
 
         if (m_frameToFile) {
@@ -610,8 +618,10 @@ int32_t VulkanVideoProcessor::GetNextFrame(VulkanDecodedFrame* pFrame, bool* end
 
     if ((m_maxFrameCount != -1) && (m_videoFrameNum >= (uint32_t)m_maxFrameCount)) {
         // Tell the FrameProcessor we're done after this frame is drawn.
+#if !defined(VK_VIDEO_NO_STDOUT_INFO)
         std::cout << "Number of video frames " << m_videoFrameNum
                   << " of max frame number " << m_maxFrameCount << std::endl;
+#endif
         m_videoStreamsCompleted = StreamCompleted();
         *endOfStream = m_videoStreamsCompleted;
         return -1;
@@ -656,6 +666,7 @@ VkResult VulkanVideoProcessor::CreateParser(const char*,
     static const VkExtensionProperties h264StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_SPEC_VERSION };
     static const VkExtensionProperties h265StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_SPEC_VERSION };
     static const VkExtensionProperties av1StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_AV1_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_AV1_DECODE_SPEC_VERSION };
+    static const VkExtensionProperties vp9StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_VP9_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_VP9_DECODE_SPEC_VERSION };
 
     const VkExtensionProperties* pStdExtensionVersion = NULL;
     if (vkCodecType == VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR) {
@@ -664,6 +675,8 @@ VkResult VulkanVideoProcessor::CreateParser(const char*,
         pStdExtensionVersion = &h265StdExtensionVersion;
     } else if (vkCodecType == VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR) {
         pStdExtensionVersion = &av1StdExtensionVersion;
+    } else if (vkCodecType == VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR) {
+        pStdExtensionVersion = &vp9StdExtensionVersion;
     } else {
         assert(!"Unsupported Codec Type");
         return VK_ERROR_FORMAT_NOT_SUPPORTED;

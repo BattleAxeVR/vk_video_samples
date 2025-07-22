@@ -29,6 +29,7 @@
 #include <iomanip>
 #include <sstream>
 #include "vulkan_interfaces.h"
+#include "VkCodecUtils/Helpers.h"
 
 struct DecoderConfig {
 
@@ -74,11 +75,11 @@ struct DecoderConfig {
         directMode = false;
         enableHwLoadBalancing = false;
         selectVideoWithComputeQueue = false;
-        enableVideoEncoder = false;
         outputy4m = true; // by default, use Y4M
         outputcrcPerFrame = false;
         outputcrc = false;
         crcOutputFileName.clear();
+        help = false;
     }
 
     using ProgramArgs = std::vector<ArgSpec>;
@@ -103,13 +104,13 @@ struct DecoderConfig {
         return true;
     };
 
-    void ParseArgs(int argc, const char *argv[]) {
+    bool ParseArgs(int argc, const char *argv[]) {
         ProgramArgs spec = {
             {"--help", nullptr, 0, "Show this help",
-                [argv](const char **, const ProgramArgs &a) {
-                    int rtn = showHelp(argv, a);
-                    exit(EXIT_SUCCESS);
-                    return rtn;
+                [this](const char **argv, const ProgramArgs &a) {
+                    showHelp(argv, a);
+                    help = true;
+                    return true;
                 }},
             {"--disableStrDemux", nullptr, 0, "Disable stream demuxing",
                 [this](const char **, const ProgramArgs &a) {
@@ -128,6 +129,9 @@ struct DecoderConfig {
                         return true;
                     } else if (strcmp(args[0], "av1") == 0) {
                         forceParserType = VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
+                        return true;
+                    } else if ((strcmp(args[0], "vp9") == 0)) {
+                        forceParserType = VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR;
                         return true;
                     } else {
                         std::cerr << "Invalid codec \"" << args[0] << "\"" << std::endl;
@@ -255,7 +259,7 @@ struct DecoderConfig {
                 }},
             {"--deviceUuid", "-deviceUuid", 1, "UUID HEX string of the device to be used",
                 [this](const char **args, const ProgramArgs &a) {
-                    size_t size = SetHexDeviceUUID(args[0]);
+                    size_t size = deviceUUID.StringToUUID(args[0]);
                     if (size != VK_UUID_SIZE) {
                         std::cerr << "Invalid deviceUuid format used: " << args[0]
                                   << " with size: " << strlen(args[0])
@@ -335,19 +339,19 @@ struct DecoderConfig {
                 std::cerr << "Unknown argument \"" << argv[i] << "\"" << std::endl;
                 std::cout << std::endl;
                 showHelp(argv, spec);
-                exit(EXIT_FAILURE);
+                return false;
             }
 
             if (i + flag->numArgs >= argc) {
                 std::cerr << "Missing arguments for \"" << argv[i] << "\"" << std::endl;
-                exit(EXIT_FAILURE);
+                return false;
             }
 
             bool disableValueCheck = false;
             if (i + 1 < argc && strcmp(argv[i + 1], "--") == 0) {
                 if (i + 1 + flag->numArgs >= argc) {
                     std::cerr << "Missing arguments for \"" << argv[i] << "\"" << std::endl;
-                    exit(EXIT_FAILURE);
+                    return false;
                 }
                 disableValueCheck = true;
                 i++;
@@ -363,13 +367,14 @@ struct DecoderConfig {
                             "set a value for \"" << argv[i] << "\"." << std::endl;
                         std::cerr << "Use \"-- " << argv[i + j] << "\" if you meant to set \"" << argv[i + j]
                             << "\" for \"" << argv[i] << "\"." << std::endl;
-                        exit(EXIT_FAILURE);
+                        return false;
                     }
                 }
             }
 
-            if (!flag->lambda(argv + i + 1, spec)) {
-                exit(EXIT_FAILURE);
+            bool result = flag->lambda(argv + i + 1, spec);
+            if (!result) {
+                return false;
             }
 
             i += flag->numArgs;
@@ -383,57 +388,19 @@ struct DecoderConfig {
                                 "Host accessible linear images requires an extra copy at the moment."
                                 << std::endl;
 
-                    exit(EXIT_FAILURE);
+                    return false;
                 }
 
                 crcInitValue.push_back(0);
             }
         }
-    }
 
-    // Assuming we have the length as a parameter:
-    size_t SetDeviceUUID(const uint8_t* pDeviceUuid, size_t length) {
-
-        if ((pDeviceUuid == nullptr) || (length == 0)) {
-            deviceUUID.clear();
-        }
-
-        deviceUUID.assign(pDeviceUuid, pDeviceUuid + length);
-        return length;
-    }
-
-    // If deviceUuid is null-terminated (less common for binary data):
-    size_t SetDeviceUUID(const uint8_t* pDeviceUuid) {
-        size_t length = strlen(reinterpret_cast<const char*>(pDeviceUuid));
-        return SetDeviceUUID(pDeviceUuid, length);
-    }
-
-    size_t SetHexDeviceUUID(const char* pDeviceUuid) {
-
-        size_t deviceUuidLen = strnlen(pDeviceUuid, (VK_UUID_SIZE * 2));
-
-        if (deviceUuidLen <  (VK_UUID_SIZE * 2)) {
-            return 0;
-        }
-
-        deviceUUID.clear();
-        for (size_t i = 0; i < VK_UUID_SIZE; ++i) {
-            uint8_t hexByte = 0;
-            sscanf(pDeviceUuid, "%2hhx", &hexByte);
-            deviceUUID.push_back(hexByte);
-            pDeviceUuid += 2;
-        }
-
-        return VK_UUID_SIZE;
-    }
-
-    const uint8_t* GetDeviceUUID() const {
-        return deviceUUID.empty() ? nullptr : deviceUUID.data();
+        return true;
     }
 
     std::string crcOutputFileName;
     std::string appName;
-    std::basic_string<uint8_t> deviceUUID;
+    vk::DeviceUuidUtils deviceUUID;
     int initialWidth;
     int initialHeight;
     int initialBitdepth;
@@ -446,6 +413,7 @@ struct DecoderConfig {
     int backBufferCount;
     int ticksPerSecond;
     int maxFrameCount;
+    bool help;
 
     std::string videoFileName;
     std::string outputFileName;
@@ -466,7 +434,6 @@ struct DecoderConfig {
     uint32_t noPresent : 1;
     uint32_t enableHwLoadBalancing : 1;
     uint32_t selectVideoWithComputeQueue : 1;
-    uint32_t enableVideoEncoder : 1;
     uint32_t outputy4m : 1;
     uint32_t outputcrc : 1;
     uint32_t outputcrcPerFrame : 1;

@@ -83,6 +83,7 @@ set(sources
     ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/VulkanBistreamBufferImpl.h
     ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/VulkanBistreamBufferImpl.cpp
     ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/VkVideoFrameToFile.cpp
+    ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/crcgenerator.cpp
     ${VK_VIDEO_DECODER_LIBS_SOURCE_ROOT}/VkDecoderUtils/VideoStreamDemuxer.cpp
     ${VK_VIDEO_DECODER_LIBS_SOURCE_ROOT}/VkDecoderUtils/VideoStreamDemuxer.h
     ${VK_VIDEO_DECODER_LIBS_SOURCE_ROOT}/VkDecoderUtils/ElementaryStream.cpp
@@ -127,13 +128,11 @@ link_directories(
     )
 
 if(WIN32)
-    find_library(SHADERC_LIB_WITH_PATH NAMES ${SHADERC_LIB_SHARED} PATHS ${VULKAN_LIB_DIR} ${VULKAN_LIB_DIR}../bin)
-    message(STATUS "SHADERC_LIB_SHARED PATH: ${SHADERC_LIB_WITH_PATH}" )
-    list(APPEND libraries PRIVATE ${AVCODEC_LIB} ${AVFORMAT_LIB} ${AVUTIL_LIB} ${VULKAN_VIDEO_PARSER_LIB} ${SHADERC_LIB_SHARED})
+    list(APPEND libraries PRIVATE ${AVCODEC_LIB} ${AVFORMAT_LIB} ${AVUTIL_LIB} ${VULKAN_VIDEO_PARSER_LIB} ${SHADERC_SHARED_LIBRARY})
 else()
     list(APPEND libraries PRIVATE -lX11)
     list(APPEND libraries PRIVATE -lavcodec -lavutil -lavformat)
-    list(APPEND libraries PRIVATE -L${SHADERC_LIB_SHARED_DIR} -l${SHADERC_LIB_SHARED})
+    list(APPEND libraries PRIVATE ${SHADERC_SHARED_LIBRARY})
     list(APPEND libraries PRIVATE -L${CMAKE_INSTALL_LIBDIR} -l${VULKAN_VIDEO_PARSER_LIB})
     list(APPEND libraries PRIVATE -L${LIBNVPARSER_BINARY_ROOT} -l${VULKAN_VIDEO_PARSER_LIB})
 endif()
