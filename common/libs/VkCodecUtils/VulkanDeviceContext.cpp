@@ -82,7 +82,8 @@ PFN_vkGetInstanceProcAddr VulkanDeviceContext::LoadVk(VulkanLibraryHandleType &v
 PFN_vkGetInstanceProcAddr VulkanDeviceContext::LoadVk(VulkanLibraryHandleType &vulkanLibHandle,
                                                       const char * pCustomLoader)
 {
-    const TCHAR* filename = _T("vulkan-1.dll");
+    //const TCHAR* filename = _T("vulkan-1.dll");
+    const CHAR* filename = ("vulkan-1.dll");
 
     HMODULE libModule = LoadLibrary(filename);
     if (libModule == nullptr) {
