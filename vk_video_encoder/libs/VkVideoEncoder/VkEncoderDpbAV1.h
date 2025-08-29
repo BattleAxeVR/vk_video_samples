@@ -20,6 +20,7 @@
 #include "VkVideoEncoderDef.h"
 #include "VkCodecUtils/VulkanVideoImagePool.h"
 #include "VkVideoEncoder/VkVideoGopStructure.h"
+#include "VkEncoderConfigAV1.h"
 
 enum VkVideoEncoderAV1PrimaryRefType {
     REGULAR_FRAME   = 0,        // regular inter frame
@@ -54,6 +55,9 @@ struct DpbEntryAV1 {
 
     // The YCbCr dpb image resource
     VkSharedBaseObj<VulkanVideoImagePoolNode>  dpbImageView;
+
+    // Intra-refresh information
+    uint32_t dirtyIntraRefreshRegions;
 };
 
 struct PicInfoAV1 : public StdVideoEncodeAV1PictureInfo {
@@ -112,8 +116,7 @@ public:
     // 1. Init instance
     static VkEncDpbAV1 *CreateInstance(void);
     // 2. Init encode session
-    int32_t DpbSequenceStart(const VkVideoEncodeAV1CapabilitiesKHR& capabilities, uint32_t userDpbSize, int32_t numBFrames,
-                             VkVideoEncodeTuningModeKHR tuningMode, uint32_t qualityLevel);
+    int32_t DpbSequenceStart(const VkSharedBaseObj<EncoderConfigAV1>& encoderConfig, uint32_t userDpbSize = 0);
     // 3. Start Picture - returns the allocated DPB index for this frame
     int8_t DpbPictureStart(StdVideoAV1FrameType frameType,
                            StdVideoAV1ReferenceName refName,
@@ -134,6 +137,9 @@ public:
     }
     uint64_t GetPictureTimestamp(int32_t picIdx);
     void SetCurRefFrameTimeStamp(uint64_t timeStamp);
+
+    uint32_t GetDirtyIntraRefreshRegions(int8_t dpbIdx);
+    void SetDirtyIntraRefreshRegions(int8_t dpbIdx, uint32_t dirtyIntraRefreshRegions);
 
     void FillStdReferenceInfo(uint8_t dpbIdx, StdVideoEncodeAV1ReferenceInfo* pStdReferenceInfo);
 

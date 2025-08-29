@@ -162,7 +162,10 @@ VkResult VkVideoEncoder::LoadNextFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
     uint8_t* writeImagePtr = srcImageDeviceMemory->GetDataPtr(imageOffset, maxSize);
     assert(writeImagePtr != nullptr);
 
-    const uint8_t* pInputFrameData = m_encoderConfig->inputFileHandler.GetMappedPtr(m_encoderConfig->input.fullImageSize, encodeFrameInfo->frameInputOrderNum);
+    // AdvanceFrameOffset() assumes we increment the frame counter, i.e. m_inputFrameNum++
+    const size_t frameOffset = m_encoderConfig->inputFileHandler.GetCurrFrameOffset();
+    m_encoderConfig->inputFileHandler.AdvanceFrameOffset(frameOffset);
+    const uint8_t* pInputFrameData = m_encoderConfig->inputFileHandler.GetMappedPtr(frameOffset);
 
     // NOTE: Get image layout
     const VkSubresourceLayout* dstSubresourceLayout = dstImageResource->GetSubresourceLayout();
@@ -734,6 +737,50 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         }
     }
 
+    if (m_encoderConfig->enableIntraRefresh) {
+        VkVideoEncodeIntraRefreshModeFlagBitsKHR mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_NONE_KHR;
+        const char* modeString = nullptr;
+
+        if (!VulkanVideoCapabilities::IsVideoEncodeIntraRefreshSupported(m_vkDevCtx)) {
+            std::cout << "Intra-refresh has been requested, but the implementation does not support it." << std::endl;
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+
+        switch (m_encoderConfig->intraRefreshMode) {
+        case EncoderConfig::REFRESH_PER_PARTITION:
+            mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_PER_PICTURE_PARTITION_BIT_KHR;
+            modeString = "Per-picture partition";
+            break;
+        case EncoderConfig::REFRESH_BLOCK_ROWS:
+            mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_ROW_BASED_BIT_KHR;
+            modeString = "Block row-based";
+            break;
+        case EncoderConfig::REFRESH_BLOCK_COLUMNS:
+            mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_COLUMN_BASED_BIT_KHR;
+            modeString = "Block column-based";
+            break;
+        case EncoderConfig::REFRESH_BLOCKS:
+            mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_BASED_BIT_KHR;
+            modeString = "Block-based";
+            break;
+        default:
+            break;
+        }
+
+        if ((mode & m_encoderConfig->intraRefreshCapabilities.intraRefreshModes) == 0) {
+            std::cout << modeString << " intra-refresh was requested, but the implementation does not support it." << std::endl;
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+
+        if (m_encoderConfig->intraRefreshCycleDuration >
+            m_encoderConfig->intraRefreshCapabilities.maxIntraRefreshCycleDuration) {
+            std::cout << "The requested intra-refresh cycle duration is greater than the maximum ("
+                      << m_encoderConfig->intraRefreshCapabilities.maxIntraRefreshCycleDuration
+                      << ") supported by the implementation" << std::endl;
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+    }
+
     // Reconfigure the gopStructure structure because the device may not support
     // specific GOP structure. For example it may not support B-frames.
     // gopStructure.Init() should be called after  encoderConfig->InitDeviceCapabilities().
@@ -745,6 +792,19 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         }
         m_encoderConfig->gopStructure.SetConsecutiveBFrameCount(encoderConfig->GetMaxBFrameCount());
     }
+
+    if (m_encoderConfig->enableIntraRefresh) {
+        if (!m_encoderConfig->IntraRefreshWithBFramesAllowed() &&
+            (m_encoderConfig->gopStructure.GetConsecutiveBFrameCount() != 0)) {
+
+            if (m_encoderConfig->verbose) {
+                std::cout << "Use of B-frames / compound prediction is not supported when intra-refresh is enabled" << std::endl;
+                std::cout << "Setting the count of Consecutive B-frames to 0" << std::endl;
+            }
+            m_encoderConfig->gopStructure.SetConsecutiveBFrameCount(0);
+        }
+    }
+
     if (m_encoderConfig->verbose) {
         std::cout << std::endl << "GOP frame count: " << (uint32_t)m_encoderConfig->gopStructure.GetGopFrameCount();
         std::cout << ", IDR period: " << (uint32_t)m_encoderConfig->gopStructure.GetIdrPeriod();
@@ -827,6 +887,16 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         m_imageQpMapFormat = supportedQpMapFormats[0];
         m_qpMapTexelSize = supportedQpMapTexelSize[0];
         m_qpMapTiling = supportedQpMapTiling[0];
+
+        uint32_t qpMapFrameCount = encoderConfig->qpMapFileHandler.GetFrameCount(encoderConfig->input.width,
+                                                                                 encoderConfig->input.height,
+                                                                                 m_qpMapTexelSize);
+        if (qpMapFrameCount < encoderConfig->numFrames) {
+            std::cerr << "Number of QP maps (" << qpMapFrameCount << ") in the input QP map file "
+                      << "is less than the number of frames (" << encoderConfig->numFrames
+                      << ") to be encoded." << std::endl;
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
     }
 
     encoderConfig->encodeWidth  = std::max(encoderConfig->encodeWidth,  encoderConfig->videoCapabilities.minCodedExtent.width);
@@ -845,6 +915,8 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     const uint32_t maxDpbPicturesCount = std::min<uint32_t>(m_maxDpbPicturesCount, encoderConfig->videoCapabilities.maxDpbSlots);
 
     VkVideoSessionCreateFlagsKHR sessionCreateFlags{};
+    void* sessionCreateInfoChain = nullptr;
+
 #ifdef VK_KHR_video_maintenance1
     m_videoMaintenance1FeaturesSupported = VulkanVideoCapabilities::GetVideoMaintenance1FeatureSupported(m_vkDevCtx);
     if (m_videoMaintenance1FeaturesSupported) {
@@ -857,6 +929,34 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         } else {
             sessionCreateFlags |= VK_VIDEO_SESSION_CREATE_ALLOW_ENCODE_EMPHASIS_MAP_BIT_KHR;
         }
+    }
+
+    VkVideoEncodeSessionIntraRefreshCreateInfoKHR intraRefreshCreateInfo{};
+    if (m_encoderConfig->enableIntraRefresh) {
+        VkVideoEncodeIntraRefreshModeFlagBitsKHR mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_NONE_KHR;
+
+        switch (m_encoderConfig->intraRefreshMode) {
+        case EncoderConfig::REFRESH_PER_PARTITION:
+            mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_PER_PICTURE_PARTITION_BIT_KHR;
+            break;
+        case EncoderConfig::REFRESH_BLOCK_ROWS:
+            mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_ROW_BASED_BIT_KHR;
+            break;
+        case EncoderConfig::REFRESH_BLOCK_COLUMNS:
+            mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_COLUMN_BASED_BIT_KHR;
+            break;
+        case EncoderConfig::REFRESH_BLOCKS:
+            mode = VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_BASED_BIT_KHR;
+            break;
+        default:
+            break;
+        }
+
+        intraRefreshCreateInfo.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_SESSION_INTRA_REFRESH_CREATE_INFO_KHR;
+        intraRefreshCreateInfo.pNext = sessionCreateInfoChain;
+        intraRefreshCreateInfo.intraRefreshMode = mode;
+
+        sessionCreateInfoChain = &intraRefreshCreateInfo;
     }
 
     if (!m_videoSession ||
@@ -879,6 +979,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                                              m_imageDpbFormat,
                                              maxDpbPicturesCount,
                                              maxActiveReferencePicturesCount,
+                                             sessionCreateInfoChain,
                                              m_videoSession);
 
         // after creating a new video session, we need a codec reset.
@@ -1530,6 +1631,18 @@ void VkVideoEncoder::ProcessQpMap(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encod
     vk::ChainNextVkStruct(encodeFrameInfo->encodeInfo, encodeFrameInfo->quantizationMapInfo);
 }
 
+void VkVideoEncoder::FillIntraRefreshInfo(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
+{
+    encodeFrameInfo->intraRefreshInfo.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_INTRA_REFRESH_INFO_KHR;
+    encodeFrameInfo->intraRefreshInfo.pNext = nullptr;
+    encodeFrameInfo->intraRefreshInfo.intraRefreshCycleDuration = m_encoderConfig->intraRefreshCycleDuration;
+    encodeFrameInfo->intraRefreshInfo.intraRefreshIndex = encodeFrameInfo->gopPosition.intraRefreshIndex;
+
+    encodeFrameInfo->encodeInfo.flags |= VK_VIDEO_ENCODE_INTRA_REFRESH_BIT_KHR;
+
+    vk::ChainNextVkStruct(encodeFrameInfo->encodeInfo, encodeFrameInfo->intraRefreshInfo);
+}
+
 VkResult VkVideoEncoder::HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
 {
     m_sendControlCmd = false;
@@ -1673,13 +1786,10 @@ VkResult VkVideoEncoder::RecordVideoCodingCmd(VkSharedBaseObj<VkVideoEncodeFrame
         videoInlineQueryInfoKHR.queryPool = queryPool;
         videoInlineQueryInfoKHR.firstQuery = querySlotId;
         videoInlineQueryInfoKHR.queryCount = numQuerySamples;
-        VkBaseInStructure* pStruct = (VkBaseInStructure*)&encodeFrameInfo->encodeInfo;
-        vk::ChainNextVkStruct(*pStruct, videoInlineQueryInfoKHR);
+
+        vk::ChainNextVkStruct(encodeFrameInfo->encodeInfo, videoInlineQueryInfoKHR);
 
         vkDevCtx->CmdEncodeVideoKHR(cmdBuf, &encodeFrameInfo->encodeInfo);
-
-        // Remove the stack pointer from the chain, causes a use after free otherwise in GetEncodeFrameInfoH264
-        encodeFrameInfo->encodeInfo.pNext = videoInlineQueryInfoKHR.pNext;
     }
     else
     {

@@ -56,14 +56,15 @@ public:
 
     struct VkVideoEncodeFrameInfo : public VkVideoRefCountBase
     {
-        VkStructureType GetType() {
-            return (encodeInfo.pNext == nullptr) ?
-                    VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR : reinterpret_cast<const VkBaseInStructure*>(encodeInfo.pNext)->sType;
+        inline VkVideoCodecOperationFlagBitsKHR GetType() const {
+            return m_codec;
         }
 
-        VkVideoEncodeFrameInfo(const void* pNext = nullptr)
+        VkVideoEncodeFrameInfo(const void* pNext = nullptr,
+                               VkVideoCodecOperationFlagBitsKHR codec = VK_VIDEO_CODEC_OPERATION_NONE_KHR)
             : encodeInfo{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR, pNext}
             , quantizationMapInfo()
+            , intraRefreshInfo()
             , frameInputOrderNum(uint64_t(-1))
             , frameEncodeInputOrderNum(uint64_t(-1))
             , frameEncodeEncodeOrderNum(uint64_t(-1))
@@ -88,6 +89,7 @@ public:
             , rateControlInfo { VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR }
             , rateControlLayersInfo{{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_LAYER_INFO_KHR }}
             , referenceSlotsInfo{}
+            , referenceIntraRefreshInfo{}
             , setupReferenceSlotInfo{ VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR }
             , videoSession()
             , videoSessionParameters()
@@ -102,10 +104,15 @@ public:
             , m_refCount(0)
             , m_parent()
             , m_parentIndex(-1)
+            , m_codec(codec)
         {
             assert(ARRAYSIZE(referenceSlotsInfo) == MAX_IMAGE_REF_RESOURCES);
             for (uint32_t i = 0; i < MAX_IMAGE_REF_RESOURCES; i++) {
                 referenceSlotsInfo[i].sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR;
+            }
+            for (uint32_t i = 0; i < MAX_IMAGE_REF_RESOURCES; i++) {
+                referenceIntraRefreshInfo[i].sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_INTRA_REFRESH_INFO_KHR;
+                referenceIntraRefreshInfo[i].pNext = nullptr;
             }
             assert(numDpbImageResources <= ARRAYSIZE(dpbImageResources));
             for (uint32_t i = 0; i < numDpbImageResources; i++) {
@@ -116,6 +123,7 @@ public:
 
         VkVideoEncodeInfoKHR                               encodeInfo;
         VkVideoEncodeQuantizationMapInfoKHR                quantizationMapInfo;
+        VkVideoEncodeIntraRefreshInfoKHR                   intraRefreshInfo;
         uint64_t                                           frameInputOrderNum;          // == encoder input order in sequence
         uint64_t                                           frameEncodeInputOrderNum;    // == encoder input order sequence number
         uint64_t                                           frameEncodeEncodeOrderNum;   // == encoder encode order sequence number
@@ -140,6 +148,7 @@ public:
         VkVideoEncodeRateControlInfoKHR                    rateControlInfo;
         VkVideoEncodeRateControlLayerInfoKHR               rateControlLayersInfo[1];
         VkVideoReferenceSlotInfoKHR                        referenceSlotsInfo[MAX_IMAGE_REF_RESOURCES];
+        VkVideoReferenceIntraRefreshInfoKHR                referenceIntraRefreshInfo[MAX_IMAGE_REF_RESOURCES];
         VkVideoReferenceSlotInfoKHR                        setupReferenceSlotInfo;
         VkSharedBaseObj<VulkanVideoSession>                videoSession;
         VkSharedBaseObj<VulkanVideoSessionParameters>      videoSessionParameters;
@@ -245,7 +254,8 @@ public:
         virtual void Reset(bool releaseResources = true) {
             // Clear and check state
             assert(encodeInfo.sType == VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR);
-            assert(encodeInfo.pNext != nullptr);
+
+            encodeInfo.pNext = nullptr;
 
             if ((frameInputOrderNum == (uint64_t)-1) &&
                 (frameEncodeInputOrderNum == (uint64_t)-1) &&
@@ -350,6 +360,7 @@ public:
         std::atomic<int32_t>                m_refCount;
         VkSharedBaseObj<VulkanBufferPoolIf> m_parent;
         int32_t                             m_parentIndex;
+        VkVideoCodecOperationFlagBitsKHR    m_codec;
     };
 #ifdef VIDEO_DISPLAY_QUEUE_SUPPORT
     class DisplayQueue {
@@ -605,6 +616,8 @@ protected:
                                      VkImageLayout dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
     void ProcessQpMap(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
+
+    void FillIntraRefreshInfo(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo);
 
     virtual VkResult ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
                                 uint32_t frameIdx, uint32_t ofTotalFrames) = 0;

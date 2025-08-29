@@ -28,7 +28,6 @@
 #include <stdint.h>
 
 #include "VkEncoderDpbAV1.h"
-#include "VkEncoderConfigAV1.h"
 
 #define VK_DPB_DBG_PRINT(expr) printf expr
 
@@ -125,9 +124,11 @@ void VkEncDpbAV1::DpbDestroy()
     delete this;
 }
 
-int32_t VkEncDpbAV1::DpbSequenceStart(const VkVideoEncodeAV1CapabilitiesKHR& capabilities, uint32_t userDpbSize, int32_t numBFrames,
-                                      VkVideoEncodeTuningModeKHR tuningMode, uint32_t qualityLevel)
+int32_t VkEncDpbAV1::DpbSequenceStart(const VkSharedBaseObj<EncoderConfigAV1>& encoderConfig, uint32_t userDpbSize)
 {
+    const VkVideoEncodeAV1CapabilitiesKHR& capabilities = encoderConfig->av1EncodeCapabilities;
+    int32_t numBFrames = encoderConfig->gopStructure.GetConsecutiveBFrameCount();
+
     DpbDeinit();
 
     assert(userDpbSize <= BUFFER_POOL_MAX_SIZE);
@@ -151,6 +152,16 @@ int32_t VkEncDpbAV1::DpbSequenceStart(const VkVideoEncodeAV1CapabilitiesKHR& cap
     } else {
         m_maxRefFramesL1 = 3; // 0
     }
+
+    if (encoderConfig->enableIntraRefresh) {
+        const VkVideoEncodeIntraRefreshCapabilitiesKHR& intraRefreshCaps = encoderConfig->intraRefreshCapabilities;
+
+        m_maxRefFramesL0 = std::min(m_maxRefFramesL0, (int32_t)intraRefreshCaps.maxIntraRefreshActiveReferencePictures);
+
+        // TODO: check for compound prediction being allowed with intra-refresh
+        m_maxRefFramesL1 = 0;
+    }
+
     // Restricts the number of references in Group1 and Group2
     m_maxRefFramesGroup1 = 4;
     if (numBFrames > 0) {
@@ -836,4 +847,19 @@ void VkEncDpbAV1::FillStdReferenceInfo(uint8_t dpbIdx, StdVideoEncodeAV1Referenc
     pStdReferenceInfo->RefFrameId = 0; //GetRefBufId(); FIXME
     pStdReferenceInfo->frame_type = pDpbEntry->frameType;
     pStdReferenceInfo->OrderHint = pDpbEntry->picOrderCntVal % (1 << ORDER_HINT_BITS);
+}
+
+uint32_t VkEncDpbAV1::GetDirtyIntraRefreshRegions(int8_t dpbIdx)
+{
+    assert(dpbIdx < m_maxDpbSize);
+    const DpbEntryAV1* pDpbEntry = &m_DPB[dpbIdx];
+
+    return pDpbEntry->dirtyIntraRefreshRegions;
+}
+
+void VkEncDpbAV1::SetDirtyIntraRefreshRegions(int8_t dpbIdx, uint32_t dirtyIntraRefreshRegions)
+{
+    assert(dpbIdx < m_maxDpbSize);
+
+    m_DPB[dpbIdx].dirtyIntraRefreshRegions = dirtyIntraRefreshRegions;
 }

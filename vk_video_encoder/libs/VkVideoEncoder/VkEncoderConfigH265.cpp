@@ -67,6 +67,25 @@ uint32_t EncoderConfigH265::GetCpbVclFactor()
     return baseFactor + depthFactor;
 }
 
+int EncoderConfigH265::DoParseArguments(int argc, const char* argv[])
+{
+    std::vector<std::string> args(argv, argv + argc);
+
+    for (int32_t i = 0; i < argc; i++) {
+        if (args[i] == "--slices") {
+            if (++i >= argc || sscanf(args[i].c_str(), "%u", &sliceCount) != 1) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+        } else {
+            fprintf(stderr, "Unrecognized option: %s\n", argv[i]);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 VkResult EncoderConfigH265::InitDeviceCapabilities(const VulkanDeviceContext* vkDevCtx)
 {
     VkResult result = VulkanVideoCapabilities::GetVideoEncodeCapabilities<VkVideoEncodeH265CapabilitiesKHR, VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_CAPABILITIES_KHR,
@@ -76,7 +95,8 @@ VkResult EncoderConfigH265::InitDeviceCapabilities(const VulkanDeviceContext* vk
                                                                  videoEncodeCapabilities,
                                                                  h265EncodeCapabilities,
                                                                  quantizationMapCapabilities,
-                                                                 h265QuantizationMapCapabilities);
+                                                                 h265QuantizationMapCapabilities,
+                                                                 intraRefreshCapabilities);
     if (result != VK_SUCCESS) {
         std::cout << "*** Could not get Video Capabilities :" << result << " ***" << std::endl;
         assert(!"Could not get Video Capabilities!");
@@ -756,6 +776,18 @@ bool EncoderConfigH265::InitParamameters(VpsH265 *vpsInfo, SpsH265 *spsInfo,
     pps->num_extra_slice_header_bits = 0;
     pps->num_ref_idx_l0_default_active_minus1 = numRefL0 > 0 ? (uint8_t)(numRefL0 - 1) : 0;
     pps->num_ref_idx_l1_default_active_minus1 = numRefL1 > 0 ? (uint8_t)(numRefL1 - 1) : 0;
+
+    if (enableIntraRefresh) {
+        uint8_t maxReferencePictures = std::min((uint8_t)intraRefreshCapabilities.maxIntraRefreshActiveReferencePictures,
+                                                (uint8_t)(pps->num_ref_idx_l0_default_active_minus1 + 1));
+
+        pps->num_ref_idx_l0_default_active_minus1 = maxReferencePictures - 1;
+
+        // TODO: Allow reference frames in reference list L1 if the implementation
+        // supports using B-frames in intra-refresh.
+        pps->num_ref_idx_l1_default_active_minus1 = 0;
+    }
+
     pps->init_qp_minus26 = 0;
     pps->diff_cu_qp_delta_depth = 0;
     pps->pps_cb_qp_offset = 0;

@@ -37,6 +37,9 @@ static void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
     --msbShift                      <integer> : Shift the input plane pixels to the left when bpp > 8, default: 16 - inputBpp  \n\
     --startFrame                    <integer> : Start Frame Number to be Encoded \n\
     --numFrames                     <integer> : End Frame Number to be Encoded \n\
+    --repeatInputFrames                none :   Repeat the input file frame'ss sequence by reseting the the stream to the beginning \n\
+                                                when the file ends. The numFrames parameter in this case can be higher than \n\
+                                                the max frames contained in the file.\n\
     --encodeOffsetX                 <integer> : Encoded offset X \n\
     --encodeOffsetY                 <integer> : Encoded offset Y \n\
     --encodeWidth                   <integer> : Encoded width \n\
@@ -45,14 +48,14 @@ static void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
     --encodeMaxHeight               <integer> : Encoded max height - the maximum content height supported. Used with content resize. \n\
     --minQp                         <integer> : Minimum QP value in the range [0, 51] \n\
     --maxQp                         <integer> : Maximum QP value in the range [0, 51] \n\
-    --qpMap                         <string>  : selct quantization map type : deltaQpMap or emaphasisMap \n\
+    --qpMap                         <string>  : select quantization map type : deltaQpMap or emaphasisMap \n\
     --qpMapFileName                 <string>  : quantization map file name \n\
     --gopFrameCount                 <integer> : Number of frame in the GOP, default 16\n\
     --idrPeriod                     <integer> : Number of frame between 2 IDR frame, default 60\n\
     --consecutiveBFrameCount        <integer> : Number of consecutive B frame count in a GOP \n\
     --temporalLayerCount            <integer> : Count of temporal layer \n\
     --lastFrameType                 <integer> : Last frame type \n\
-    --closedGop                     Close the Gop, default open\n\
+    --closedGop                       none    : Close the Gop, default open\n\
     --qualityLevel                  <integer> : Select quality level \n\
     --tuningMode                    <integer> or <string> : Select tuning mode \n\
                                         default(0), hq(1), lowlatency(2), ultralowlatency(3), lossless(4) \n\
@@ -66,14 +69,35 @@ static void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
     --deviceID                      <hexadec> : deviceID to be used, \n\
     --deviceUuid                    <string>  : deviceUuid to be used \n\
     --enableHwLoadBalancing                   : enables HW load balancing using multiple encoder devices when available \n\
-    --testOutOfOrderRecording                 : Testing only - enable testing for out-of-order-recording\n");
+    --testOutOfOrderRecording                 : Testing only - enable testing for out-of-order-recording\n\
+    --intraRefreshCycleDuration     <integer> : Duration of (number of frames in) an intra-refresh cycle\n\
+    --intraRefreshMode              <string>  : Intra-refresh mode to be used\n\
+                                        picpartition, blockrows, blockcolumns, blocks\n\
+    --testIntraRefreshMidway        <integer> : Index at which an intra-refresh cycle is to be interrupted.\n\
+                                        This is for testing purposes only. Allowed values for this option\n\
+                                        are such that 0 <= index < intraRefreshCycleDuration .\n\
+                                        A value of 0 is a no-op; for other values, a new intra-refresh\n\
+                                        cycle will start `index` frames into an existing intra-refresh\n\
+                                        cycle and a complete cycle will be finished. This results in\n\
+                                        a fully intra-refreshed frame being available after every\n\
+                                        `intraRefreshCycleDuration + index` frames.\n\
+    --testSkipIntraRefreshStart     <integer> : Index at which an intra-refresh cycle should start.\n\
+                                        This is for testing purposes only. Allowed values for this option\n\
+                                        are such that 0 <= index < intraRefreshCycleDuration .\n\
+                                        A value of 0 is a no-op; for other values, a new intra-refresh\n\
+                                        cycle will start with an intra-refresh index of `index` and\n\
+                                        will run to completion. This will be followed by a full\n\
+                                        intra-refresh cycle. This results in a fully intra-refreshed frame\n\
+                                        being available after every `intraRefreshCycleDuration + index` frames.\n");
 
     if ((codec == VK_VIDEO_CODEC_OPERATION_NONE_KHR) || (codec == VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR)) {
-        fprintf(stderr, "\nH264 specific arguments: None\n");
+        fprintf(stderr, "\nH264 specific arguments:\n\
+        --slices                        <integer> : Number of slices to divide the picture into\n");
     }
 
     if ((codec == VK_VIDEO_CODEC_OPERATION_NONE_KHR) || (codec == VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR)) {
-        fprintf(stderr, "\nH265 specific arguments: None\n");
+        fprintf(stderr, "\nH265 specific arguments:\n\
+        --slices                        <integer> : Number of slices to divide the picture into\n");
     }
 
     if ((codec == VK_VIDEO_CODEC_OPERATION_NONE_KHR) || (codec == VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR)) {
@@ -149,7 +173,7 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
             if (fileSize <= 0) {
                 return (int)fileSize;
             }
-            if (inputFileHandler.parseY4M(&input.width, &input.height, &frameRateNumerator, &frameRateDenominator)) {
+            if (inputFileHandler.ParseY4mHeader(&input.width, &input.height, &frameRateNumerator, &frameRateDenominator)) {
                 if (verbose) {
                     printf("Y4M file detected: width %d height %d\n", input.width, input.height);
                 }
@@ -259,6 +283,8 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
                 fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
                 return -1;
             }
+        } else if (args[i] == "--repeatInputFrames") {
+            repeatInputFrames = true;
         } else if (args[i] == "--encodeOffsetX") {
             if ((++i >= argc) || (sscanf(args[i].c_str(), "%u", &encodeOffsetX) != 1)) {
                 fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
@@ -478,6 +504,49 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
             // Testing only - don't use this feature for production!
             fprintf(stdout, "Warning: %s should only be used for testing!\n", args[i].c_str());
             enableOutOfOrderRecording = true;
+        } else if (args[i] == "--intraRefreshCycleDuration") {
+            if (++i >= argc || sscanf(args[i].c_str(), "%u", &intraRefreshCycleDuration) != 1) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+            gopStructure.SetIntraRefreshCycleDuration(intraRefreshCycleDuration);
+            if (verbose) {
+                printf("Selected intraRefreshCycleDuration: %d\n", intraRefreshCycleDuration);
+            }
+        } else if (args[i] == "--intraRefreshMode") {
+            if (++i >= argc) {
+                fprintf(stderr, "Invalid paramter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+
+            if (args[i] == "picpartition") {
+                intraRefreshMode = REFRESH_PER_PARTITION;
+            } else if (args[i] == "blockrows") {
+                intraRefreshMode = REFRESH_BLOCK_ROWS;
+            } else if (args[i] == "blockcolumns") {
+                intraRefreshMode = REFRESH_BLOCK_COLUMNS;
+            } else if (args[i] == "blocks") {
+                intraRefreshMode = REFRESH_BLOCKS;
+            } else {
+                fprintf(stderr, "Invalid intra-refresh mode %s\n", args[i].c_str());
+                return -1;
+            }
+        } else if (args[i] == "--testIntraRefreshMidway") {
+            // Testing only - don't use this feature for production!
+            fprintf(stdout, "Warning: %s should only be used for testing!\n", args[i].c_str());
+            if (++i >= argc || sscanf(args[i].c_str(), "%u", &intraRefreshCycleRestartIndex) != 1) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+            gopStructure.SetIntraRefreshCycleRestartIndex(intraRefreshCycleRestartIndex);
+        } else if (args[i] == "--testSkipIntraRefreshStart") {
+            // Testing only - don't use this feature for production!
+            fprintf(stdout, "Warning: %s should only be used for testing!\n", args[i].c_str());
+            if (++i >= argc || sscanf(args[i].c_str(), "%u", &intraRefreshSkippedStartIndex) != 1) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+            gopStructure.SetIntraRefreshSkippedStartIndex(intraRefreshSkippedStartIndex);
         } else {
             argcount++;
             arglist.push_back(args[i].c_str());
@@ -485,18 +554,45 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
     }
 
     if (!inputFileHandler.HasFileName()) {
-        fprintf(stderr, "An input file was not specified\n");
+        fprintf(stderr, "An input file must be specified\n");
         return -1;
     }
 
     if (input.width == 0) {
-        fprintf(stderr, "The width was not specified\n");
+        fprintf(stderr, "The input width must be specified\n");
         return -1;
     }
 
     if (input.height == 0) {
-        fprintf(stderr, "The height was not specified\n");
+        fprintf(stderr, "The input height must specified\n");
         return -1;
+    }
+
+    inputFileHandler.SetFrameGeometry(input.width, input.height, input.bpp, input.chromaSubsampling);
+
+    frameCount = inputFileHandler.GetMaxFrameCount();
+
+    if (startFrame > 0) {
+        if (startFrame >= frameCount) {
+            std::cout << "startFrame " << startFrame
+                      <<  " must be inferior to input file max frame count of "
+                      << frameCount << ". Reseting startFrame to 0." << std::endl;
+            startFrame = 0;
+        } else {
+            inputFileHandler.ResetFrameOffset(startFrame);
+        }
+    }
+
+    if ((repeatInputFrames == false) &&
+            ((numFrames == 0) || (numFrames > (frameCount - startFrame)))) {
+        std::cout << "numFrames " << numFrames
+                  <<  " should be different from zero and inferior to input file max frame count of "
+                  << frameCount << ". Using input file frame count." << std::endl;
+        numFrames = frameCount;
+        if (numFrames == 0) {
+            fprintf(stderr, "No frames found in the input file, frame count is zero. Exit.");
+            return -1;
+        }
     }
 
     if (!outputFileHandler.HasFileName()) {
@@ -557,17 +653,42 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
         return -1;
     }
 
-    frameCount = inputFileHandler.GetFrameCount(input.width, input.height, input.bpp, input.chromaSubsampling);
+    if ((intraRefreshMode == REFRESH_NONE && intraRefreshCycleDuration > 0) ||
+        (intraRefreshMode != REFRESH_NONE && intraRefreshCycleDuration == 0)) {
 
-    if (numFrames == 0 || numFrames > frameCount) {
-        std::cout << "numFrames " << numFrames
-                  <<  " should be different from zero and inferior to input file frame count: "
-                  << frameCount << ". Use input file frame count." << std::endl;
-        numFrames = frameCount;
-        if (numFrames == 0) {
-            fprintf(stderr, "No frames found in the input file, frame count is zero. Exit.");
-            return -1;
-        }
+        fprintf(stderr, "Both --intraRefreshMode and --intraRefreshCycleDuration must be "
+                        "specified to enable intra-refresh.\n");
+        return -1;
+    }
+
+    enableIntraRefresh = (intraRefreshMode != REFRESH_NONE) && (intraRefreshCycleDuration > 0);
+
+    if (!enableIntraRefresh && intraRefreshCycleRestartIndex > 0) {
+        fprintf(stderr, "Intra-refresh must be enabled when using --testIntraRefreshMidway\n");
+        return -1;
+    }
+
+    if (enableIntraRefresh && intraRefreshCycleRestartIndex >= intraRefreshCycleDuration) {
+        fprintf(stderr, "The value specified for --testIntraRefreshMidway must be in "
+                        "the range [0, intraRefreshCycleDuration-1]\n");
+        return -1;
+    }
+
+    if (!enableIntraRefresh && intraRefreshSkippedStartIndex > 0) {
+        fprintf(stderr, "Intra-refresh must be enabled when using --testSkipIntraRefreshStart\n");
+        return -1;
+    }
+
+    if (enableIntraRefresh && intraRefreshSkippedStartIndex >= intraRefreshCycleDuration) {
+        fprintf(stderr, "The value specified for --testSkipIntraRefreshStart must be in "
+                        "the range [0, intraRefreshCycleDuration-1]\n");
+        return -1;
+    }
+
+    if (intraRefreshCycleRestartIndex > 0 && intraRefreshSkippedStartIndex > 0) {
+        fprintf(stderr, "Combining --testIntraRefreshMidway with --testSkipIntraRefreshStart "
+                        "is not supported\n");
+        return -1;
     }
 
     return DoParseArguments(argcount, arglist.data());

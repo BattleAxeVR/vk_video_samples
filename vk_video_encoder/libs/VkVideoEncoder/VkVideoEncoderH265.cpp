@@ -203,7 +203,7 @@ VkResult VkVideoEncoderH265::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
         if ((m_pps.num_ref_idx_l0_default_active_minus1 != pFrameInfo->stdPictureInfo.pRefLists->num_ref_idx_l0_active_minus1) ||
             (m_pps.num_ref_idx_l1_default_active_minus1 != pFrameInfo->stdPictureInfo.pRefLists->num_ref_idx_l1_active_minus1)) {
 
-            pFrameInfo->stdSliceSegmentHeader.flags.num_ref_idx_active_override_flag = 1;
+            pFrameInfo->stdSliceSegmentHeader[0].flags.num_ref_idx_active_override_flag = 1;
         }
 
     } else {
@@ -211,6 +211,11 @@ VkResult VkVideoEncoderH265::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
     }
 
     m_dpb.DpbPictureEnd(encodeFrameInfo->setupImageResource, 1 /* numTemporalLayers */, pFrameInfo->stdPictureInfo.flags.is_reference);
+
+    // Populate all Std slice segment header entries. For now, they are all identical.
+    for (uint32_t i = 1; i < pFrameInfo->pictureInfo.naluSliceSegmentEntryCount; i++) {
+        pFrameInfo->stdSliceSegmentHeader[i] = pFrameInfo->stdSliceSegmentHeader[0];
+    }
 
     // ***************** Start Update DPB info ************** //
 
@@ -231,6 +236,25 @@ VkResult VkVideoEncoderH265::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
     }
     pFrameInfo->numDpbImageResources = numReferenceSlots;
 
+    const bool isIntraRefreshFrame = m_encoderConfig->gopStructure.IsIntraRefreshFrame(encodeFrameInfo->gopPosition);
+    if (m_encoderConfig->enableIntraRefresh && isIntraRefreshFrame) {
+        // The number of dirty intra-refresh regions in the current picture
+        uint32_t dirtyIntraRefreshRegions = m_encoderConfig->intraRefreshCycleDuration - encodeFrameInfo->gopPosition.intraRefreshIndex - 1;
+
+        m_dpb.SetCurDirtyIntraRefreshRegions(dirtyIntraRefreshRegions);
+
+        if (m_encoderConfig->intraRefreshMode == EncoderConfig::REFRESH_PER_PARTITION) {
+            // When using per-picture partition intra-refresh, mark the slice corresponding
+            // to the currently refreshed intra-refresh region as an intra slice.
+            for (uint32_t i = 0; i < pFrameInfo->pictureInfo.naluSliceSegmentEntryCount; i++) {
+                if (i != encodeFrameInfo->gopPosition.intraRefreshIndex)
+                    continue;
+
+                pFrameInfo->stdSliceSegmentHeader[i].slice_type = STD_VIDEO_H265_SLICE_TYPE_I;
+            }
+        }
+    }
+
     if ((encodeFrameInfo->gopPosition.pictureType == VkVideoGopStructure::FRAME_TYPE_P) ||
             (encodeFrameInfo->gopPosition.pictureType == VkVideoGopStructure::FRAME_TYPE_B)) {
 
@@ -248,6 +272,14 @@ VkResult VkVideoEncoderH265::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
 
             pFrameInfo->stdDpbSlotInfo[numReferenceSlots].sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_DPB_SLOT_INFO_KHR;
             pFrameInfo->stdDpbSlotInfo[numReferenceSlots].pStdReferenceInfo = &pFrameInfo->stdReferenceInfo[numReferenceSlots];
+
+            if (isIntraRefreshFrame) {
+                pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots].sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_INTRA_REFRESH_INFO_KHR;
+                pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots].dirtyIntraRefreshRegions =
+                    m_dpb.GetDirtyIntraRefreshRegions(dpbIndex);
+
+                pFrameInfo->stdDpbSlotInfo[numReferenceSlots].pNext = &pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots];
+            }
 
             pFrameInfo->referenceSlotsInfo[numReferenceSlots].sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR;
             pFrameInfo->referenceSlotsInfo[numReferenceSlots].pNext = &pFrameInfo->stdDpbSlotInfo[numReferenceSlots];
@@ -418,6 +450,8 @@ VkResult VkVideoEncoderH265::EncodeFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
     pFrameInfo->videoSession = m_videoSession;
     pFrameInfo->videoSessionParameters = m_videoSessionParameters;
 
+    pFrameInfo->pictureInfo.naluSliceSegmentEntryCount = m_encoderConfig->sliceCount;
+
     pFrameInfo->stdPictureInfo.sps_video_parameter_set_id = m_vps.vpsInfo.vps_video_parameter_set_id;
     pFrameInfo->stdPictureInfo.pps_seq_parameter_set_id   = m_sps.sps.sps_seq_parameter_set_id;
     pFrameInfo->stdPictureInfo.pps_pic_parameter_set_id   = m_pps.pps_pic_parameter_set_id;
@@ -473,36 +507,44 @@ VkResult VkVideoEncoderH265::EncodeFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
             return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    pFrameInfo->stdSliceSegmentHeader.slice_type = sliceType;
-    pFrameInfo->stdSliceSegmentHeader.MaxNumMergeCand = 5;
-    pFrameInfo->stdSliceSegmentHeader.flags.first_slice_segment_in_pic_flag = 1;
-    pFrameInfo->stdSliceSegmentHeader.flags.dependent_slice_segment_flag = 0;
-    pFrameInfo->stdSliceSegmentHeader.flags.slice_sao_luma_flag = 1;
-    pFrameInfo->stdSliceSegmentHeader.flags.slice_sao_chroma_flag = 1;
-    pFrameInfo->stdSliceSegmentHeader.flags.num_ref_idx_active_override_flag = 0;
-    pFrameInfo->stdSliceSegmentHeader.flags.mvd_l1_zero_flag = 0;
-    pFrameInfo->stdSliceSegmentHeader.flags.cabac_init_flag = 0;
-    pFrameInfo->stdSliceSegmentHeader.flags.cu_chroma_qp_offset_enabled_flag = 1;
-    pFrameInfo->stdSliceSegmentHeader.flags.deblocking_filter_override_flag = 1;
-    pFrameInfo->stdSliceSegmentHeader.flags.slice_deblocking_filter_disabled_flag = 0;
-    pFrameInfo->stdSliceSegmentHeader.flags.collocated_from_l0_flag = 0;
-    pFrameInfo->stdSliceSegmentHeader.flags.slice_loop_filter_across_slices_enabled_flag = 0;
+    memset(pFrameInfo->stdSliceSegmentHeader, 0, sizeof(pFrameInfo->stdSliceSegmentHeader));
+
+    pFrameInfo->stdSliceSegmentHeader[0].slice_type = sliceType;
+    pFrameInfo->stdSliceSegmentHeader[0].MaxNumMergeCand = 5;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.first_slice_segment_in_pic_flag = 1;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.dependent_slice_segment_flag = 0;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.slice_sao_luma_flag = 1;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.slice_sao_chroma_flag = 1;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.num_ref_idx_active_override_flag = 0;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.mvd_l1_zero_flag = 0;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.cabac_init_flag = 0;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.cu_chroma_qp_offset_enabled_flag = 1;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.deblocking_filter_override_flag = 1;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.slice_deblocking_filter_disabled_flag = 0;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.collocated_from_l0_flag = 0;
+    pFrameInfo->stdSliceSegmentHeader[0].flags.slice_loop_filter_across_slices_enabled_flag = 0;
 
     if (m_rateControlInfo.rateControlMode == VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR) {
+        int32_t constantQp = 0;
+
         switch (encodeFrameInfo->gopPosition.pictureType) {
             case VkVideoGopStructure::FRAME_TYPE_IDR:
             case VkVideoGopStructure::FRAME_TYPE_I:
-                pFrameInfo->naluSliceSegmentInfo.constantQp = encodeFrameInfo->constQp.qpIntra;
+                constantQp = encodeFrameInfo->constQp.qpIntra;
                 break;
             case VkVideoGopStructure::FRAME_TYPE_P:
-                pFrameInfo->naluSliceSegmentInfo.constantQp = encodeFrameInfo->constQp.qpInterP;
+                constantQp = encodeFrameInfo->constQp.qpInterP;
                 break;
             case VkVideoGopStructure::FRAME_TYPE_B:
-                pFrameInfo->naluSliceSegmentInfo.constantQp = encodeFrameInfo->constQp.qpInterB;
+                constantQp = encodeFrameInfo->constQp.qpInterB;
                 break;
             default:
                 assert(!"Invalid picture type");
                 break;
+        }
+
+        for (uint32_t i = 0; i < pFrameInfo->pictureInfo.naluSliceSegmentEntryCount; i++) {
+            pFrameInfo->naluSliceSegmentInfo[i].constantQp = constantQp;
         }
     }
 
@@ -525,6 +567,11 @@ VkResult VkVideoEncoderH265::EncodeFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
 
     if (m_encoderConfig->enableQpMap) {
         ProcessQpMap(encodeFrameInfo);
+    }
+
+    const bool isIntraRefreshFrame = m_encoderConfig->gopStructure.IsIntraRefreshFrame(encodeFrameInfo->gopPosition);
+    if (m_encoderConfig->enableIntraRefresh && isIntraRefreshFrame) {
+        FillIntraRefreshInfo(encodeFrameInfo);
     }
 
     EnqueueFrame(encodeFrameInfo, isIdr, isReference);

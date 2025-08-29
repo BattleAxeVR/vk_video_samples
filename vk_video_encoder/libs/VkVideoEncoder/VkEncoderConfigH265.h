@@ -78,6 +78,7 @@ struct EncoderConfigH265 : public EncoderConfig {
     uint32_t               vbvInitialDelay;       // Specifies the VBV(HRD) initial delay in bits. Set 0 to use the default VBV  initial delay.
     VkVideoEncodeH265QpKHR minQp;                 // Specifies the const or minimum or QP used for rate control.
     VkVideoEncodeH265QpKHR maxQp;                 // Specifies the maximum QP used for rate control.
+    uint32_t               sliceCount;
     const LevelLimits*     levelLimits;
     size_t                 levelLimitsTblSize;
 
@@ -99,6 +100,7 @@ struct EncoderConfigH265 : public EncoderConfig {
       , vbvInitialDelay()
       , minQp{}
       , maxQp{}
+      , sliceCount(1)
     {
         // Table A-1
         static const LevelLimits levelLimitsTbl[] = {
@@ -129,15 +131,17 @@ struct EncoderConfigH265 : public EncoderConfig {
 
     virtual ~EncoderConfigH265() {}
 
-    virtual EncoderConfigH265* GetEncoderConfigh265() {
+    virtual EncoderConfigH265* GetEncoderConfigh265() override {
         return this;
     }
+
+    virtual int DoParseArguments(int argc, const char* argv[]) override;
 
     uint32_t GetCtbAlignedPicSizeInSamples(uint32_t& picWidthInCtbsY, uint32_t& picHeightInCtbsY, bool minCtbsY = false);
 
     uint32_t GetCpbVclFactor();
 
-    virtual VkResult InitializeParameters()
+    virtual VkResult InitializeParameters() override
     {
         VkResult result = EncoderConfig::InitializeParameters();
         if (result != VK_SUCCESS) {
@@ -147,20 +151,28 @@ struct EncoderConfigH265 : public EncoderConfig {
         return VK_SUCCESS;
     }
 
-    virtual VkResult InitDeviceCapabilities(const VulkanDeviceContext* vkDevCtx);
+    virtual VkResult InitDeviceCapabilities(const VulkanDeviceContext* vkDevCtx) override;
 
-    virtual uint32_t GetDefaultVideoProfileIdc() { return STD_VIDEO_H265_PROFILE_IDC_MAIN; };
+    virtual uint32_t GetDefaultVideoProfileIdc() override { return STD_VIDEO_H265_PROFILE_IDC_MAIN; };
 
     // 1. First h.265 determine the number of the Dpb buffers required
-    virtual int8_t InitDpbCount();
+    virtual int8_t InitDpbCount() override;
 
     uint32_t GetMaxDpbSize(uint32_t pictureSizeInSamplesY, int32_t levelIndex);
     int8_t VerifyDpbSize();
 
     // 2. First h.265 determine the rate control parameters
-    virtual bool InitRateControl();
+    virtual bool InitRateControl() override;
 
-    virtual uint8_t GetMaxBFrameCount() { return  static_cast<uint8_t>(h265EncodeCapabilities.maxBPictureL0ReferenceCount); }
+    virtual uint8_t GetMaxBFrameCount() override
+    {
+        return static_cast<uint8_t>(h265EncodeCapabilities.maxBPictureL0ReferenceCount);
+    }
+
+    virtual bool IntraRefreshWithBFramesAllowed() override
+    {
+        return ((h265EncodeCapabilities.flags & VK_VIDEO_ENCODE_H265_CAPABILITY_B_PICTURE_INTRA_REFRESH_BIT_KHR) != 0);
+    }
 
     bool GetRateControlParameters(VkVideoEncodeRateControlInfoKHR *rcInfo,
                                   VkVideoEncodeRateControlLayerInfoKHR *pRcLayerInfo,
