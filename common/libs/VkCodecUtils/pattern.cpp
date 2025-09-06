@@ -470,7 +470,7 @@ void VkFillYuv::fillVkCommon(const ImageData *pImageData, VkSubresourceLayout la
         rgbaPitch = layouts[0].rowPitch;
     }
 
-    const VkFormatDesc* pRgbFormatDesc = vkFormatLookUp(rgbVkFormat);
+    const ::VkFormatDesc* pRgbFormatDesc = vkFormatLookUp(rgbVkFormat);
     ABORT_IF_TRUE(pRgbFormatDesc == NULL);
 
     rgbaChannelsPerColor = pRgbFormatDesc->numberOfChannels;

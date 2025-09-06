@@ -86,6 +86,7 @@ public:
         return result;
     }
 
+#ifdef VK_USE_VIDEO_ENCODE_QUEUE
     template<class VkVideoEncodeCodecQualityLevelPropertiesKHR, VkStructureType VK_STRUCTURE_TYPE_VIDEO_ENCODE_CODEC_QUALITY_LEVEL_PROPERTIES_KHR>
     static VkResult GetPhysicalDeviceVideoEncodeQualityLevelProperties(const VulkanDeviceContext* vkDevCtx,
                                                                        const VkVideoCoreProfile& videoProfile,
@@ -107,6 +108,7 @@ public:
         }
         return result;
     }
+#endif
 
     static VkResult GetSupportedVideoFormats(const VulkanDeviceContext* vkDevCtx,
                                              const VkVideoCoreProfile& videoProfile,
