@@ -481,12 +481,12 @@ public:
                 // picFlags.field_pic_flag = true;
             }
 
-            if (!currentPictureIsProgressive && (used_for_reference & topFieldMask)) {
+            if (is_field_ref && (used_for_reference & topFieldMask)) {
                 if (m_dumpParserData)
                     std::cout << "TOP_FIELD_IS_REF ";
                 picFlags.top_field_flag = true;
             }
-            if (!currentPictureIsProgressive && (used_for_reference & bottomFieldMask)) {
+            if (is_field_ref && (used_for_reference & bottomFieldMask)) {
                 if (m_dumpParserData)
                     std::cout << "BOTTOM_FIELD_IS_REF ";
                 picFlags.bottom_field_flag = true;
@@ -1196,6 +1196,7 @@ int32_t VulkanVideoParser::BeginSequence(const VkParserSequenceInfo* pnvsi)
         detectedFormat.display_area.right = pnvsi->nDisplayWidth;
         detectedFormat.display_area.bottom = pnvsi->nDisplayHeight;
         detectedFormat.filmGrainUsed = pnvsi->hasFilmGrain;
+        detectedFormat.canUseFields  = pnvsi->canUseFields;
 
         if ((StdChromaFormatIdc)pnvsi->nChromaFormat == chroma_format_idc_420) {
             detectedFormat.chromaSubsampling = VK_VIDEO_CHROMA_SUBSAMPLING_420_BIT_KHR;
@@ -1765,11 +1766,11 @@ uint32_t VulkanVideoParser::FillDpbAV1State(
         printf("\n");
 
         printf("ref_frame_picture: ");
-        for (int32_t inIdx = 0; inIdx < STD_VIDEO_AV1_NUM_REF_FRAMES; inIdx++) {
+        for (uint32_t inIdx = 0; inIdx < STD_VIDEO_AV1_NUM_REF_FRAMES; inIdx++) {
             printf("%02d ", inIdx);
         }
         printf("\nref_frame_picture: ");
-        for (int32_t inIdx = 0; inIdx < STD_VIDEO_AV1_NUM_REF_FRAMES; inIdx++) {
+        for (uint32_t inIdx = 0; inIdx < STD_VIDEO_AV1_NUM_REF_FRAMES; inIdx++) {
             int8_t picIdx = pin->pic_idx[inIdx];
             printf("%02d ", picIdx);
         }
@@ -1794,7 +1795,7 @@ uint32_t VulkanVideoParser::FillDpbAV1State(
         //hdr.delta_frame_id_minus_1[dpbSlot] = pin->delta_frame_id_minus_1[pin->ref_frame_idx[i]];
     }
 
-    for (int32_t inIdx = 0; inIdx < STD_VIDEO_AV1_NUM_REF_FRAMES; inIdx++) {
+    for (uint32_t inIdx = 0; inIdx < STD_VIDEO_AV1_NUM_REF_FRAMES; inIdx++) {
         int8_t picIdx = isKeyFrame ? -1 : pin->pic_idx[inIdx];
         int8_t dpbSlot = -1;
         if ((picIdx >= 0) && !(refDpbUsedAndValidMask & (1 << picIdx))) {
@@ -1895,11 +1896,11 @@ uint32_t VulkanVideoParser::FillDpbVP9State(
     if (m_dumpDpbData) {
         printf(";;;; ======= VP9 DPB fill begin %d =======\n", m_nCurrentPictureID);
         printf("ref_frame_idx: "); {
-        for (int i = 0 ; i < STD_VIDEO_VP9_REFS_PER_FRAME; i++)
+        for (uint32_t i = 0 ; i < STD_VIDEO_VP9_REFS_PER_FRAME; i++)
             printf("%02d ", i);
         }
         printf("\nref_frame_idx: ");
-        for (int i = 0 ; i < STD_VIDEO_VP9_REFS_PER_FRAME; i++) {
+        for (uint32_t i = 0 ; i < STD_VIDEO_VP9_REFS_PER_FRAME; i++) {
             printf("%02d ", pin->ref_frame_idx[i]);
         }
         printf("\n");
@@ -1915,11 +1916,11 @@ uint32_t VulkanVideoParser::FillDpbVP9State(
         printf("\n");
 
         printf("ref_frame_picture: ");
-        for (int32_t inIdx = 0; inIdx < STD_VIDEO_VP9_NUM_REF_FRAMES; inIdx++) {
+        for (uint32_t inIdx = 0; inIdx < STD_VIDEO_VP9_NUM_REF_FRAMES; inIdx++) {
             printf("%02d ", inIdx);
         }
         printf("\nref_frame_picture: ");
-        for (int32_t inIdx = 0; inIdx < STD_VIDEO_VP9_NUM_REF_FRAMES; inIdx++) {
+        for (uint32_t inIdx = 0; inIdx < STD_VIDEO_VP9_NUM_REF_FRAMES; inIdx++) {
             int8_t picIdx = pin->pic_idx[inIdx];
             printf("%02d ", picIdx);
         }
@@ -1944,7 +1945,7 @@ uint32_t VulkanVideoParser::FillDpbVP9State(
         //hdr.delta_frame_id_minus_1[dpbSlot] = pin->delta_frame_id_minus_1[pin->ref_frame_idx[i]];
     }
 
-    for (int32_t inIdx = 0; inIdx < STD_VIDEO_VP9_NUM_REF_FRAMES; inIdx++) {
+    for (uint32_t inIdx = 0; inIdx < STD_VIDEO_VP9_NUM_REF_FRAMES; inIdx++) {
         int8_t picIdx = isKeyFrame ? -1 : pin->pic_idx[inIdx];
         int8_t dpbSlot = -1;
         if ((picIdx >= 0) && !(refDpbUsedAndValidMask & (1 << picIdx))) {
