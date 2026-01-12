@@ -72,14 +72,8 @@ struct EncoderConfigH264 : public EncoderConfig {
         , spsId(0)
         , ppsId()
         , numSlicesPerPicture(DEFAULT_NUM_SLICES_PER_PICTURE)
-        , vbvBufferSize(0)
-        , vbvInitialDelay(0)
         , minQp{0, 0, 0}
         , maxQp{0, 0, 0}
-        , rcInfoH264{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_RATE_CONTROL_INFO_KHR }
-        , rcLayerInfoH264{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_RATE_CONTROL_LAYER_INFO_KHR }
-        , rcInfo{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR, &rcInfoH264 }
-        , rcLayerInfo{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_LAYER_INFO_KHR, &rcLayerInfoH264 }
         , sliceCount(1)
         , disable_deblocking_filter_idc(STD_VIDEO_H264_DISABLE_DEBLOCKING_FILTER_IDC_DISABLED)
         , qpprime_y_zero_transform_bypass_flag(true)
@@ -140,14 +134,8 @@ struct EncoderConfigH264 : public EncoderConfig {
     uint8_t                                    spsId;                 // Specifies the SPS id of the sequence header
     uint8_t                                    ppsId;                 // Specifies the PPS id of the picture header
     uint32_t                                   numSlicesPerPicture;   // sliceModeData specifies number of slices in the picture.
-    uint32_t                                   vbvBufferSize;         // Specifies the VBV(HRD) buffer size. in bits. Set 0 to use the default VBV  buffer size.
-    uint32_t                                   vbvInitialDelay;       // Specifies the VBV(HRD) initial delay in bits. Set 0 to use the default VBV  initial delay.
     VkVideoEncodeH264QpKHR                     minQp;                 // Specifies the const or minimum or QP used for rate control.
     VkVideoEncodeH264QpKHR                     maxQp;                 // Specifies the maximum QP used for rate control.
-    VkVideoEncodeH264RateControlInfoKHR        rcInfoH264;
-    VkVideoEncodeH264RateControlLayerInfoKHR   rcLayerInfoH264;
-    VkVideoEncodeRateControlInfoKHR            rcInfo;
-    VkVideoEncodeRateControlLayerInfoKHR       rcLayerInfo;
     uint32_t                                   sliceCount;
 
     StdVideoH264DisableDeblockingFilterIdc     disable_deblocking_filter_idc;
@@ -191,7 +179,15 @@ struct EncoderConfigH264 : public EncoderConfig {
 
     virtual VkResult InitDeviceCapabilities(const VulkanDeviceContext* vkDevCtx) override;
 
-    virtual uint32_t GetDefaultVideoProfileIdc() override { return STD_VIDEO_H264_PROFILE_IDC_HIGH; };
+    virtual uint32_t GetDefaultVideoProfileIdc() override {
+        // H.264 profile selection based on bit depth and chroma format
+        // HIGH_444_PREDICTIVE is required for 10-bit or 444 chroma
+        if (encodeBitDepthLuma > 8 || encodeBitDepthChroma > 8 ||
+            encodeChromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR) {
+            return STD_VIDEO_H264_PROFILE_IDC_HIGH_444_PREDICTIVE;
+        }
+        return STD_VIDEO_H264_PROFILE_IDC_HIGH;
+    };
 
     // 1. First h.264 determine the number of the Dpb buffers required
     virtual int8_t InitDpbCount() override;

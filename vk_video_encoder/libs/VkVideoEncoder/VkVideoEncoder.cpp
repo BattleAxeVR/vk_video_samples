@@ -24,25 +24,9 @@
 #include "VkVideoEncoder/VkEncoderConfigH265.h"
 #include "VkVideoEncoder/VkEncoderConfigAV1.h"
 #include "VkCodecUtils/YCbCrConvUtilsCpu.h"
-
-static size_t getFormatTexelSize(VkFormat format)
-{
-    switch (format) {
-    case VK_FORMAT_R8_UINT:
-    case VK_FORMAT_R8_SINT:
-    case VK_FORMAT_R8_UNORM:
-        return 1;
-    case VK_FORMAT_R16_UINT:
-    case VK_FORMAT_R16_SINT:
-        return 2;
-    case VK_FORMAT_R32_UINT:
-    case VK_FORMAT_R32_SINT:
-        return 4;
-    default:
-        assert(!"unknown format");
-        return 0;
-    }
-}
+#ifdef NV_AQ_GPU_LIB_SUPPORTED
+#include "VulkanAqProcessor.h"
+#endif // NV_AQ_GPU_LIB_SUPPORTED
 
 VkResult VkVideoEncoder::CreateVideoEncoder(const VulkanDeviceContext* vkDevCtx,
                                             VkSharedBaseObj<EncoderConfig>& encoderConfig,
@@ -101,18 +85,19 @@ VkResult VkVideoEncoder::LoadNextQpMapFrameFromFile(VkSharedBaseObj<VkVideoEncod
         uint8_t* writeQpMapImagePtr = srcQpMapImageDeviceMemory->GetDataPtr(qpMapImageOffset, qpMapMaxSize);
         assert(writeQpMapImagePtr != nullptr);
 
-        size_t formatSize = getFormatTexelSize(m_imageQpMapFormat);
+        const VkFormatDesc* pFormatDesc = vkFormatLookUp(m_imageQpMapFormat);
+        size_t formatTexelSize = (pFormatDesc != nullptr) ? pFormatDesc->numberOfBytes : 1;
         uint32_t inputQpMapWidth = (m_encoderConfig->input.width + m_qpMapTexelSize.width - 1) / m_qpMapTexelSize.width;
         uint32_t qpMapWidth = (m_encoderConfig->encodeWidth + m_qpMapTexelSize.width - 1) / m_qpMapTexelSize.width;
         uint32_t qpMapHeight = (m_encoderConfig->encodeHeight + m_qpMapTexelSize.height - 1) / m_qpMapTexelSize.height;
-        uint64_t qpMapFileOffset = qpMapWidth * qpMapHeight * encodeFrameInfo->frameInputOrderNum * formatSize;
+        uint64_t qpMapFileOffset = qpMapWidth * qpMapHeight * encodeFrameInfo->frameInputOrderNum * formatTexelSize;
         const uint8_t* pQpMapData = m_encoderConfig->qpMapFileHandler.GetMappedPtr(qpMapFileOffset);
 
         const VkSubresourceLayout* dstQpMapSubresourceLayout = dstQpMapImageResource->GetSubresourceLayout();
 
         for (uint32_t j = 0; j < qpMapHeight; j++) {
             memcpy(writeQpMapImagePtr + (dstQpMapSubresourceLayout[0].offset + j * dstQpMapSubresourceLayout[0].rowPitch),
-                   pQpMapData + j * inputQpMapWidth * formatSize, qpMapWidth * formatSize);
+                   pQpMapData + j * inputQpMapWidth * formatTexelSize, qpMapWidth * formatTexelSize);
         }
     }
 
@@ -257,8 +242,60 @@ VkResult VkVideoEncoder::EncodeFrameCommon(VkSharedBaseObj<VkVideoEncodeFrameInf
 {
     encodeFrameInfo->constQp = m_encoderConfig->constQp;
 
+    assert(encodeFrameInfo);
+    assert(m_encoderConfig);
+    assert(encodeFrameInfo->srcEncodeImageResource);
+
+    encodeFrameInfo->videoSession = m_videoSession;
+    encodeFrameInfo->videoSessionParameters = m_videoSessionParameters;
+    encodeFrameInfo->qualityLevel = m_encoderConfig->qualityLevel;
+
+    encodeFrameInfo->frameEncodeInputOrderNum = m_encodeInputFrameNum++;
+
+    // GetPositionInGOP() method returns display position of the picture relative to last key frame picture.
+    const bool isIdr = m_encoderConfig->gopStructure.GetPositionInGOP(m_gopState,
+                                                                encodeFrameInfo->gopPosition,
+                                                                (encodeFrameInfo->frameEncodeInputOrderNum == 0),
+                                                                uint32_t(m_encoderConfig->numFrames - encodeFrameInfo->frameEncodeInputOrderNum));
+    if (isIdr) {
+        assert(encodeFrameInfo->gopPosition.pictureType == VkVideoGopStructure::FRAME_TYPE_IDR);
+    }
+    const bool isReference = m_encoderConfig->gopStructure.IsFrameReference(encodeFrameInfo->gopPosition);
+
     // and encode the input frame with the encoder next
-    return EncodeFrame(encodeFrameInfo);
+    VkResult result = EncodeFrame(encodeFrameInfo);
+    if (result != VK_SUCCESS) {
+        assert(!"EncodeFrame error!!!");
+        return result;
+    }
+
+    // Handles the generic portion of the control command, if enabled
+    if (HandleCtrlCmd(encodeFrameInfo)) {
+        // Handles the codec-specific rate control command if enabled
+        CodecHandleRateControlCmd(encodeFrameInfo);
+    }
+
+    if (m_encoderConfig->enableQpMap) {
+        ProcessQpMap(encodeFrameInfo);
+    }
+
+    const bool isIntraRefreshFrame = m_encoderConfig->gopStructure.IsIntraRefreshFrame(encodeFrameInfo->gopPosition);
+    if (m_encoderConfig->enableIntraRefresh && isIntraRefreshFrame) {
+        FillIntraRefreshInfo(encodeFrameInfo);
+    }
+
+    // NOTE: dstBuffer resource acquisition can be deferred at the last moment before submit
+    VkDeviceSize size = GetBitstreamBuffer(encodeFrameInfo->outputBitstreamBuffer);
+    assert((size > 0) && (encodeFrameInfo->outputBitstreamBuffer != nullptr));
+    if ((size == 0) || (encodeFrameInfo->outputBitstreamBuffer == nullptr)) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    encodeFrameInfo->encodeInfo.dstBuffer = encodeFrameInfo->outputBitstreamBuffer->GetBuffer();
+    encodeFrameInfo->encodeInfo.dstBufferOffset = 0;
+
+    EnqueueFrame(encodeFrameInfo, isIdr, isReference);
+
+    return VK_SUCCESS;
 }
 
 VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
@@ -330,12 +367,31 @@ VkResult VkVideoEncoder::StageInputFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
             // row and column replication is disabled. Don't touch the image padding area.
             dstPictureResourceInfo.codedExtent = copyImageExtent;
         }
+
+        // Get image view for filter (nullptr if no pool)
+        VkSharedBaseObj<VkImageResourceView> subsampledImageView;
+#ifdef NV_AQ_GPU_LIB_SUPPORTED
+        // Get subsampled Y image if pool is available (ref-counted in encodeFrameInfo)
+        if (m_inputSubsampledImagePool != nullptr) {
+            bool success = m_inputSubsampledImagePool->GetAvailableImage(encodeFrameInfo->subsampledImageResource,
+                                                                         VK_IMAGE_LAYOUT_GENERAL);
+            assert(success && encodeFrameInfo->subsampledImageResource);
+        }
+
+        if (encodeFrameInfo->subsampledImageResource) {
+            encodeFrameInfo->subsampledImageResource->GetImageView(subsampledImageView);
+        }
+#endif // NV_AQ_GPU_LIB_SUPPORTED
+
+        // Call filter (binding 9 only bound if subsampledYImageView is valid)
         result = m_inputComputeFilter->RecordCommandBuffer(cmdBuf,
+                                                           encodeFrameInfo->inputCmdBuffer->GetNodePoolIndex(),
                                                            linearInputImageView,
                                                            &srcPictureResourceInfo,
                                                            srcEncodeImageView,
                                                            &dstPictureResourceInfo,
-                                                           encodeFrameInfo->inputCmdBuffer->GetNodePoolIndex());
+                                                           subsampledImageView); // nullptr if no pool
+
         if (result != VK_SUCCESS) {
             return result;
         }
@@ -696,8 +752,9 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     if (!VulkanVideoCapabilities::IsCodecTypeSupported(m_vkDevCtx,
                                                        m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(),
                                                        encoderConfig->codec)) {
-        std::cout << "*** The video codec " << VkVideoCoreProfile::CodecToName(encoderConfig->codec) << " is not supported! ***" << std::endl;
-        assert(!"The video codec is not supported");
+        std::cerr << "ERROR [" << __FILE__ << ":" << __LINE__ << "]: "
+                  << "The video codec " << VkVideoCoreProfile::CodecToName(encoderConfig->codec)
+                  << " is not supported!" << std::endl;
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
@@ -706,10 +763,18 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     // Update the video profile
     encoderConfig->InitVideoProfile();
 
-    encoderConfig->InitDeviceCapabilities(m_vkDevCtx);
+    VkResult result = encoderConfig->InitDeviceCapabilities(m_vkDevCtx);
+    if (result != VK_SUCCESS) {
+        std::cerr << "ERROR [" << __FILE__ << ":" << __LINE__ << "]: "
+                  << "InitDeviceCapabilities() failed. VkResult: " << result
+                  << " (0x" << std::hex << result << std::dec << ")"
+                  << " - The video profile/format may not be supported by the driver." << std::endl;
+        return result;
+    }
 
     if (encoderConfig->qualityLevel >= encoderConfig->videoEncodeCapabilities.maxQualityLevels) {
-        std::cerr << "Quality level " << encoderConfig->qualityLevel
+        std::cerr << "ERROR [" << __FILE__ << ":" << __LINE__ << "]: "
+                  << "Quality level " << encoderConfig->qualityLevel
                   << " is greater than the maximum supported quality level "
                   << (encoderConfig->videoEncodeCapabilities.maxQualityLevels - 1) << std::endl;
         return VK_ERROR_INITIALIZATION_FAILED;
@@ -725,14 +790,14 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     if (m_encoderConfig->enableQpMap) {
         if ((m_encoderConfig->qpMapMode == EncoderConfig::DELTA_QP_MAP) &&
             ((m_encoderConfig->videoEncodeCapabilities.flags & VK_VIDEO_ENCODE_CAPABILITY_QUANTIZATION_DELTA_MAP_BIT_KHR) == 0)) {
-                std::cout << "Delta QP Map was requested, but the implementation does not support it!" << std::endl;
-                assert(!"Delta QP Map is not supported");
+                std::cerr << "ERROR [" << __FILE__ << ":" << __LINE__ << "]: "
+                          << "Delta QP Map was requested, but the implementation does not support it!" << std::endl;
                 return VK_ERROR_INITIALIZATION_FAILED;
         }
         if ((m_encoderConfig->qpMapMode == EncoderConfig::EMPHASIS_MAP) &&
             ((m_encoderConfig->videoEncodeCapabilities.flags & VK_VIDEO_ENCODE_CAPABILITY_EMPHASIS_MAP_BIT_KHR) == 0)) {
-                std::cout << "Emphasis Map was requested, but the implementation does not support it!" << std::endl;
-                assert(!"Emphasis QP Map is not supported");
+                std::cerr << "ERROR [" << __FILE__ << ":" << __LINE__ << "]: "
+                          << "Emphasis Map was requested, but the implementation does not support it!" << std::endl;
                 return VK_ERROR_INITIALIZATION_FAILED;
         }
     }
@@ -846,9 +911,9 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     VkFormat supportedDpbFormats[8];
     VkFormat supportedInFormats[8];
     uint32_t formatCount = sizeof(supportedDpbFormats) / sizeof(supportedDpbFormats[0]);
-    VkResult result = VulkanVideoCapabilities::GetVideoFormats(m_vkDevCtx, encoderConfig->videoCoreProfile,
-                                                               VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR,
-                                                               formatCount, supportedDpbFormats);
+    result = VulkanVideoCapabilities::GetVideoFormats(m_vkDevCtx, encoderConfig->videoCoreProfile,
+                                                      VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR,
+                                                      formatCount, supportedDpbFormats);
 
     if(result != VK_SUCCESS) {
         fprintf(stderr, "\nInitEncoder Error: Failed to get desired video format for the DPB.\n");
@@ -917,6 +982,9 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
     VkVideoSessionCreateFlagsKHR sessionCreateFlags{};
     void* sessionCreateInfoChain = nullptr;
 
+    if (!m_encoderConfig->disableEncodeParameterOptimizations) {
+        sessionCreateFlags |= VK_VIDEO_SESSION_CREATE_ALLOW_ENCODE_PARAMETER_OPTIMIZATIONS_BIT_KHR;
+    }
 #ifdef VK_KHR_video_maintenance1
     m_videoMaintenance1FeaturesSupported = VulkanVideoCapabilities::GetVideoMaintenance1FeatureSupported(m_vkDevCtx);
     if (m_videoMaintenance1FeaturesSupported) {
@@ -1019,6 +1087,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                                                     VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                                                     VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
                                                 nullptr, // pVideoProfile
+                                                VK_IMAGE_ASPECT_COLOR_BIT, // a whole YCbCr or RGBA image
                                                 false,   // useImageArray
                                                 false,   // useImageViewArray
                                                 true     // useLinear
@@ -1047,6 +1116,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                                           m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(),
                                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                           encoderConfig->videoCoreProfile.GetProfile(), // pVideoProfile
+                                          VK_IMAGE_ASPECT_COLOR_BIT, // a whole YCbCr or RGBA image
                                           false,   // useImageArray
                                           false,   // useImageViewArray
                                           false    // useLinear
@@ -1123,6 +1193,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                                                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                                                           VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
                                                         nullptr, // pVideoProfile
+                                                        VK_IMAGE_ASPECT_COLOR_BIT, // a whole YCbCr or RGBA image
                                                         false,   // useImageArray
                                                         false,   // useImageViewArray
                                                         true     // useLinear
@@ -1161,6 +1232,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                                                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT),
                                               encoderConfig->videoCoreProfile.GetProfile(), // pVideoProfile
+                                              VK_IMAGE_ASPECT_COLOR_BIT, // a whole YCbCr or RGBA image
                                               false,   // useImageArray
                                               false,   // useImageViewArray
                                               m_qpMapTiling == VK_IMAGE_TILING_LINEAR   // useLinear
@@ -1177,15 +1249,17 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
         return result;
     }
 
-    uint32_t numEncodeImagesInFlight = std::max<uint32_t>(m_holdRefFramesInQueue + m_holdRefFramesInQueue * m_encoderConfig->gopStructure.GetConsecutiveBFrameCount(), 4);
+    const uint32_t numEncodeImagesInFlight = std::max<uint32_t>(m_holdRefFramesInQueue + m_holdRefFramesInQueue * m_encoderConfig->gopStructure.GetConsecutiveBFrameCount(), 4);
+    const uint32_t maxEncodeQueueDepth = std::max<uint32_t>(maxDpbPicturesCount, maxActiveReferencePicturesCount) + numEncodeImagesInFlight;
     result = m_dpbImagePool->Configure(m_vkDevCtx,
-                                       std::max<uint32_t>(maxDpbPicturesCount, maxActiveReferencePicturesCount) + numEncodeImagesInFlight,
+                                       maxEncodeQueueDepth,
                                        m_imageDpbFormat,
                                        imageExtent,
                                        dpbImageUsage,
                                        m_vkDevCtx->GetVideoEncodeQueueFamilyIdx(),
                                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                        encoderConfig->videoCoreProfile.GetProfile(), // pVideoProfile
+                                       VK_IMAGE_ASPECT_COLOR_BIT, // a whole YCbCr or RGBA image
                                        encoderConfig->useDpbArray,                   // useImageArray
                                        false,   // useImageViewArrays
                                        false    // useLinear
@@ -1265,6 +1339,20 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                    0.0, false, 0.00, false, VK_COMPARE_OP_NEVER, 0.0, 16.0, VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE, false
         };
 
+        // VulkanFilterYuvCompute now supports subsampling
+        uint32_t filterFlags = VulkanFilterYuvCompute::FLAG_NONE;
+        if (encoderConfig->input.msbShift > 0) {
+            filterFlags |= VulkanFilterYuvCompute::FLAG_OUTPUT_LSB_TO_MSB_SHIFT;
+        }
+#ifdef NV_AQ_GPU_LIB_SUPPORTED
+        if (m_aqAnalyzes) {
+            // Enable Y subsampling for AQ if enabled in the encoder
+            filterFlags |= VulkanFilterYuvCompute::FLAG_ENABLE_Y_SUBSAMPLING;
+        }
+#endif // NV_AQ_GPU_LIB_SUPPORTED
+        // Enable row/column replication
+        filterFlags |= VulkanFilterYuvCompute::FLAG_ENABLE_ROW_COLUMN_REPLICATION_ALL;
+        
         result = VulkanFilterYuvCompute::Create(m_vkDevCtx,
                                                 m_vkDevCtx->GetComputeQueueFamilyIdx(),
                                                 0, // queueIndex
@@ -1272,8 +1360,7 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
                                                 encoderConfig->numInputImages,
                                                 encoderConfig->input.vkFormat,  // in filter format (can be RGB)
                                                 m_imageInFormat,  // out filter - same as input for now.
-                                                false, // inputEnableMsbToLsbShift
-                                                (encoderConfig->input.msbShift > 0),
+                                                filterFlags,
                                                 &ycbcrConversionCreateInfo,
                                                 &ycbcrPrimariesConstants,
                                                 &samplerInfo,
@@ -1284,6 +1371,55 @@ VkResult VkVideoEncoder::InitEncoder(VkSharedBaseObj<EncoderConfig>& encoderConf
 
         m_inputCommandBufferPool = m_inputComputeFilter;
 
+#ifdef NV_AQ_GPU_LIB_SUPPORTED
+        if (m_aqAnalyzes) {
+            // Allocate subsampled image pool for the new filter capability
+            result = VulkanVideoImagePool::Create(m_vkDevCtx, m_inputSubsampledImagePool);
+            if (result != VK_SUCCESS) {
+                fprintf(stderr, "\nInitEncoder Error: Failed to create inputSubsampledImagePool.\n");
+                return result;
+            }
+
+            // Subsampled dimensions: half of input dimensions
+            VkExtent2D subsampledExtent {
+                (std::max(m_maxCodedExtent.width, encoderConfig->input.width) + 1) / 2,
+                (std::max(m_maxCodedExtent.height, encoderConfig->input.height) + 1) / 2
+            };
+
+            // Align images, worse cases for AV1
+            const uint32_t subsampledExtentAlign = 32;
+            subsampledExtent.width = vk::alignedSize(subsampledExtent.width, subsampledExtentAlign);
+            subsampledExtent.height = vk::alignedSize(subsampledExtent.height, subsampledExtentAlign);
+
+            // Determine format based on input bit depth
+            const VkMpFormatInfo* inputMpInfo = YcbcrVkFormatInfo(encoderConfig->input.vkFormat);
+            const uint32_t inputBitDepth = inputMpInfo ? GetBitsPerChannel(inputMpInfo->planesLayout) : 8;
+            VkFormat subsampledYFormat = (inputBitDepth > 8) ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM;
+
+            result = m_inputSubsampledImagePool->Configure(
+                m_vkDevCtx,
+                encoderConfig->numInputImages + 4,
+                subsampledYFormat, // R8_UNORM or R16_UNORM (single-channel Y)
+                subsampledExtent,
+                VK_IMAGE_USAGE_STORAGE_BIT |           // Write from this filter, read from AQ
+                VK_IMAGE_USAGE_SAMPLED_BIT |           // Texture sampling for AQ
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |      // CPU readback for debug
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT,       // Clear/init if needed
+                m_vkDevCtx->GetComputeQueueFamilyIdx(),
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,  // Device-local for max GPU performance
+                nullptr,  // pVideoProfile
+                VK_IMAGE_ASPECT_PLANE_0_BIT, // Y-plane only image
+                false,    // useImageArray
+                false,    // useImageViewArray
+                false     // useLinear - OPTIMAL tiling for GPU performance
+            );
+
+            if (result != VK_SUCCESS) {
+                fprintf(stderr, "\nInitEncoder Error: Failed to Configure inputSubsampledImagePool.\n");
+                return result;
+            }
+        }
+#endif // NV_AQ_GPU_LIB_SUPPORTED
     } else {
 
         result = VulkanCommandBufferPool::Create(m_vkDevCtx, m_inputCommandBufferPool);
@@ -1643,8 +1779,11 @@ void VkVideoEncoder::FillIntraRefreshInfo(VkSharedBaseObj<VkVideoEncodeFrameInfo
     vk::ChainNextVkStruct(encodeFrameInfo->encodeInfo, encodeFrameInfo->intraRefreshInfo);
 }
 
-VkResult VkVideoEncoder::HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
+bool VkVideoEncoder::HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo)
 {
+    if (m_sendControlCmd == 0) {
+        return false;
+    }
     m_sendControlCmd = false;
     encodeFrameInfo->sendControlCmd = true;
 
@@ -1673,6 +1812,7 @@ VkResult VkVideoEncoder::HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
         pNext = (VkBaseInStructure*)&encodeFrameInfo->qualityLevelInfo;
     }
 
+    const bool sendRateControlCmd = m_sendRateControlCmd;
     if (m_sendRateControlCmd == true) {
 
         m_sendRateControlCmd = false;
@@ -1700,7 +1840,7 @@ VkResult VkVideoEncoder::HandleCtrlCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& 
 
     encodeFrameInfo->pControlCmdChain = pNext;
 
-    return VK_SUCCESS;
+    return sendRateControlCmd;
 }
 
 VkResult VkVideoEncoder::RecordVideoCodingCmd(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
@@ -2096,10 +2236,14 @@ int32_t VkVideoEncoder::DeinitEncoder()
          m_hwLoadBalancingTimelineSemaphore = VK_NULL_HANDLE;
     }
 
-    m_linearInputImagePool = nullptr;
-    m_inputImagePool       = nullptr;
-    m_dpbImagePool         = nullptr;
+    m_linearInputImagePool    = nullptr;
+    m_inputImagePool          = nullptr;
+    m_dpbImagePool            = nullptr;
 
+#ifdef NV_AQ_GPU_LIB_SUPPORTED
+    m_inputSubsampledImagePool = nullptr;
+#endif // NV_AQ_GPU_LIB_SUPPORTED
+    m_qpMapImagePool          = nullptr;
     m_inputComputeFilter      = nullptr;
     m_inputCommandBufferPool  = nullptr;
     m_encodeCommandBufferPool = nullptr;

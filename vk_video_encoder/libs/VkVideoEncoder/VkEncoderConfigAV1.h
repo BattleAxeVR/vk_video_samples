@@ -113,7 +113,24 @@ struct EncoderConfigAV1 : public EncoderConfig {
 
     virtual VkResult InitDeviceCapabilities(const VulkanDeviceContext* vkDevCtx) override;
 
-    virtual uint32_t GetDefaultVideoProfileIdc() override { return STD_VIDEO_AV1_PROFILE_MAIN; }
+    virtual uint32_t GetDefaultVideoProfileIdc() override {
+        // AV1 profile selection based on bit depth and chroma format
+        // AV1 Main Profile: 8-bit and 10-bit 4:2:0
+        // AV1 High Profile: 8-bit and 10-bit 4:2:0 and 4:4:4
+        // AV1 Professional: 8-bit, 10-bit, 12-bit for all chroma formats including 4:2:2
+
+        // PROFESSIONAL is required for 12-bit or 422
+        if (encodeBitDepthLuma > 10 || encodeBitDepthChroma > 10 ||
+            encodeChromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_422_BIT_KHR) {
+            return STD_VIDEO_AV1_PROFILE_PROFESSIONAL;
+        }
+        // HIGH is required for 444 chroma
+        if (encodeChromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR) {
+            return STD_VIDEO_AV1_PROFILE_HIGH;
+        }
+        // MAIN supports 8-bit and 10-bit with 420
+        return STD_VIDEO_AV1_PROFILE_MAIN;
+    }
 
     virtual int8_t InitDpbCount() override;
 
@@ -193,16 +210,10 @@ struct EncoderConfigAV1 : public EncoderConfig {
     VkVideoEncodeAV1CapabilitiesKHR         av1EncodeCapabilities{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_CAPABILITIES_KHR };
     VkVideoEncodeAV1QualityLevelPropertiesKHR av1QualityLevelProperties{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_QUALITY_LEVEL_PROPERTIES_KHR };
     VkVideoEncodeAV1QuantizationMapCapabilitiesKHR av1QuantizationMapCapabilities { VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_QUANTIZATION_MAP_CAPABILITIES_KHR };
-    uint32_t                                vbvBufferSize{};
-    uint32_t                                vbvInitialDelay{};
     uint32_t                                picWidthInSbs{};
     uint32_t                                picHeightInSbs{};
     VkVideoEncodeAV1QIndexKHR               minQIndex{};
     VkVideoEncodeAV1QIndexKHR               maxQIndex{255, 255, 255};
-    VkVideoEncodeAV1RateControlInfoKHR      rcInfoAV1{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_RATE_CONTROL_INFO_KHR };
-    VkVideoEncodeAV1RateControlLayerInfoKHR rcLayerInfoAV1{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_RATE_CONTROL_LAYER_INFO_KHR };
-    VkVideoEncodeRateControlInfoKHR         rcInfo{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR };
-    VkVideoEncodeRateControlLayerInfoKHR    rcLayerInfo{ VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_LAYER_INFO_KHR };
     const LevelLimits*                      levelLimits;
     size_t                                  levelLimitsSize;
 

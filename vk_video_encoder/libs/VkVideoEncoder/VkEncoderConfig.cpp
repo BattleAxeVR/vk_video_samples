@@ -67,9 +67,12 @@ static void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
                                         default(0), disabled(1), cbr(2), vbr(4)\n\
     --averageBitrate                <integer> : Target bitrate for cbr/vbr RC modes\n\
     --maxBitrate                    <integer> : Peak bitrate for cbr/vbr RC modes\n\
+    --vbvBufferSize                 <integer> : Size in bits of the VBV / HRD buffer for cbr/vbr RC modes\n\
     --qpI                           <integer> : QP or QIndex (for AV1) used for I-frames when RC disabled\n\
     --qpP                           <integer> : QP or QIndex (for AV1) used for P-frames when RC disabled\n\
     --qpB                           <integer> : QP or QIndex (for AV1) used for B-frames when RC disabled\n\
+    --disableEncodeParameterOptimizations     : Disables encode parameter optimization flag bit in VkVideoSessionCreateFlagsKHR \n\
+                                                when creating a video session\n\
     --deviceID                      <hexadec> : deviceID to be used, \n\
     --deviceUuid                    <string>  : deviceUuid to be used \n\
     --enableHwLoadBalancing                   : enables HW load balancing using multiple encoder devices when available \n\
@@ -490,6 +493,11 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
                     fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
                     return -1;
                 }
+        } else if (args[i] == "--vbvBufferSize") {
+            if (++i >= argc || sscanf(args[i].c_str(), "%u", &vbvBufferSize) != 1) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
         } else if (args[i] == "--qpI") {
                 if (++i >= argc || sscanf(args[i].c_str(), "%u", &constQp.qpIntra) != 1) {
                     fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
@@ -505,6 +513,8 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
                     fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
                     return -1;
                 }
+        } else if (args[i] == "--disableEncodeParameterOptimizations") {
+            disableEncodeParameterOptimizations = true;
         } else if (args[i] == "--deviceID") {
             if ((++i >= argc) || (sscanf(args[i].c_str(), "%x", &deviceId) != 1)) {
                  fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
@@ -847,6 +857,12 @@ void EncoderConfig::InitVideoProfile()
         encodeBitDepthChroma = encodeBitDepthLuma;
     }
 
+    // If videoProfileIdc is not explicitly set (default -1), select appropriate profile
+    // based on bit depth and chroma format to ensure correct profile for 10-bit/12-bit content
+    if (videoProfileIdc == (uint32_t)-1) {
+        videoProfileIdc = GetDefaultVideoProfileIdc();
+    }
+
     VkVideoEncodeUsageInfoKHR encodeUsageInfo = {};
     encodeUsageInfo.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_USAGE_INFO_KHR;
     encodeUsageInfo.pNext = NULL;
@@ -858,8 +874,7 @@ void EncoderConfig::InitVideoProfile()
     videoCoreProfile = VkVideoCoreProfile(codec, encodeChromaSubsampling,
                                           GetComponentBitDepthFlagBits(encodeBitDepthLuma),
                                           GetComponentBitDepthFlagBits(encodeBitDepthChroma),
-                                          (videoProfileIdc != (uint32_t)-1) ? videoProfileIdc :
-                                                  GetDefaultVideoProfileIdc(),
+                                          videoProfileIdc,
                                           VK_VIDEO_DECODE_H264_PICTURE_LAYOUT_PROGRESSIVE_KHR, // interlaced video is not supported with encode
                                           encodeUsageInfo);
 }

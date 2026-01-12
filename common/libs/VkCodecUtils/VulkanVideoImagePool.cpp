@@ -54,6 +54,7 @@ VkResult VulkanVideoImagePoolNode::CreateImage( const VulkanDeviceContext* vkDev
                                                 uint32_t                   imageIndex,
                                                 VkSharedBaseObj<VkImageResource>& imageArrayParent,
                                                 VkSharedBaseObj<VkImageResourceView>& imageViewArrayParent,
+                                                VkImageAspectFlags aspectMask,
                                                 bool useLinear)
 {
     VkResult result = VK_SUCCESS;
@@ -78,7 +79,7 @@ VkResult VulkanVideoImagePoolNode::CreateImage( const VulkanDeviceContext* vkDev
 
         uint32_t baseArrayLayer = imageArrayParent ? imageIndex : 0;
         if (!imageViewArrayParent) {
-            VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, baseArrayLayer, 1 };
+            VkImageSubresourceRange subresourceRange = { aspectMask, 0, 1, baseArrayLayer, 1 };
             result = VkImageResourceView::Create(vkDevCtx, imageResource,
                                                  subresourceRange,
                                                  m_imageResourceView);
@@ -137,9 +138,10 @@ VkResult VulkanVideoImagePool::GetImageSetNewLayout(uint32_t imageIndex,
                                                     VkImageLayout newImageLayout) {
 
     VkResult result = VK_SUCCESS;
-    bool recreateImage = !m_imageResources[imageIndex].RecreateImage();
+    // RecreateImage() returns true if image doesn't exist or needs recreation
+    bool needsCreation = m_imageResources[imageIndex].RecreateImage();
 
-    if (recreateImage) {
+    if (needsCreation) {
         result = m_imageResources[imageIndex].CreateImage(
                            m_vkDevCtx,
                            &m_imageCreateInfo,
@@ -147,6 +149,7 @@ VkResult VulkanVideoImagePool::GetImageSetNewLayout(uint32_t imageIndex,
                            imageIndex,
                            m_imageArray,
                            m_imageViewArray,
+                           m_aspectMask,
                            m_usesLinearImage);
 
         if (result != VK_SUCCESS) {
@@ -236,6 +239,7 @@ VkResult VulkanVideoImagePool::Configure(const VulkanDeviceContext*   vkDevCtx,
                                          uint32_t                     queueFamilyIndex,
                                          VkMemoryPropertyFlags        requiredMemProps,
                                          const VkVideoProfileInfoKHR* pVideoProfile,
+                                         VkImageAspectFlags           aspectMask,
                                          bool                         useImageArray,
                                          bool                         useImageViewArray,
                                          bool                         useLinearImage)
@@ -302,7 +306,7 @@ VkResult VulkanVideoImagePool::Configure(const VulkanDeviceContext*   vkDevCtx,
         assert(m_imageArray);
         // Create an image view that has the same number of layers as the image.
         // In that scenario, while specifying the resource, the API must specifically choose the image layer.
-        VkImageSubresourceRange subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, numImages };
+        VkImageSubresourceRange subresourceRange = { aspectMask, 0, 1, 0, numImages };
         VkResult result = VkImageResourceView::Create(vkDevCtx, m_imageArray,
                                                       subresourceRange,
                                                       m_imageViewArray);
@@ -324,12 +328,13 @@ VkResult VulkanVideoImagePool::Configure(const VulkanDeviceContext*   vkDevCtx,
 
             VkResult result =
                      m_imageResources[imageIndex].CreateImage(vkDevCtx,
-                                                                       &m_imageCreateInfo,
-                                                                       m_requiredMemProps,
-                                                                       imageIndex,
-                                                                       m_imageArray,
-                                                                       m_imageViewArray,
-                                                                       useLinearImage);
+                                                              &m_imageCreateInfo,
+                                                              m_requiredMemProps,
+                                                              imageIndex,
+                                                              m_imageArray,
+                                                              m_imageViewArray,
+                                                              aspectMask,
+                                                              useLinearImage);
 
             assert(result == VK_SUCCESS);
             if (result != VK_SUCCESS) {
@@ -342,6 +347,7 @@ VkResult VulkanVideoImagePool::Configure(const VulkanDeviceContext*   vkDevCtx,
     m_poolSize                = numImages;
     m_usesImageArray          = useImageArray;
     m_usesImageViewArray      = useImageViewArray;
+    m_aspectMask              = aspectMask;
     m_usesLinearImage         = useLinearImage;
 
     return VK_SUCCESS;

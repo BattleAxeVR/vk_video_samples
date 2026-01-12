@@ -595,12 +595,18 @@ VkResult VulkanDeviceContext::InitPhysicalDevice(int32_t deviceId, const vk::Dev
             if ((requestQueueTypes & VK_QUEUE_GRAPHICS_BIT) && (gfxQueueFamily < 0) &&
                     (queueFamilyFlags & VK_QUEUE_GRAPHICS_BIT)) {
                 gfxQueueFamily = i;
+                if ((transferQueueFamily < 0) && !!(queueFamilyFlags & VK_QUEUE_TRANSFER_BIT)) {
+                    transferQueueFamily = i;
+                }
                 foundQueueTypes |= queueFamilyFlags;
                 if (dumpQueues) std::cout << "\t Found graphics queue family " <<  i << " with " << queue.queueFamilyProperties.queueCount << " max num of queues." << std::endl;
             } else if ((requestQueueTypes & VK_QUEUE_COMPUTE_BIT) && (computeQueueFamilyOnly < 0) &&
                        ((VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT) == (queueFamilyFlags & (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT)))) {
                 computeQueueFamilyOnly = i;
                 foundQueueTypes |= queueFamilyFlags;
+                if ((transferQueueFamily < 0) && !!(queueFamilyFlags & VK_QUEUE_TRANSFER_BIT)) {
+                    transferQueueFamily = i;
+                }
                 if (dumpQueues) std::cout << "\t Found compute only queue family " <<  i << " with " << queue.queueFamilyProperties.queueCount << " max num of queues." << std::endl;
             } else if ((requestQueueTypes & VK_QUEUE_TRANSFER_BIT) && (transferQueueFamilyOnly < 0) &&
                     (VK_QUEUE_TRANSFER_BIT == (queueFamilyFlags & VK_QUEUE_TRANSFER_BIT))) {
@@ -1145,15 +1151,23 @@ VkResult VulkanDeviceContext::InitVulkanDecoderDevice(const char * pAppName,
 
     if (videoCodecs == VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR) {
         AddReqDeviceExtension(VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME);
-    }
-    if (videoCodecs == VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR) {
+    } else if (videoCodecs == VK_VIDEO_CODEC_OPERATION_DECODE_H265_BIT_KHR) {
         AddReqDeviceExtension(VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME);
-    }
-    if (videoCodecs == VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR) {
+    } else if (videoCodecs == VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR) {
         AddReqDeviceExtension(VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME);
-    }
-    if (videoCodecs == VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR) {
+    } else if (videoCodecs == VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR) {
         AddReqDeviceExtension(VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME);
+    } else {
+        static const char* const optinalCodecsExtensions[] = {
+                VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME,
+                VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME,
+                VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME,
+                VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME,
+            nullptr
+        };
+        // If the codec set is VK_VIDEO_CODEC_OPERATION_NONE_KHR or
+        // VIDEO_CODEC_OPERATIONS_ALL, then set all codecs as optional extensions.
+        AddOptDeviceExtensions(optinalCodecsExtensions);
     }
 
     VkResult result = InitVulkanDevice(pAppName, vkInstance, enbaleVerboseDump);

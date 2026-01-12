@@ -74,8 +74,6 @@ struct EncoderConfigH265 : public EncoderConfig {
     CuSize                 cuSize;
     TransformUnitSize      minTransformUnitSize;
     TransformUnitSize      maxTransformUnitSize;
-    uint32_t               vbvBufferSize;         // Specifies the VBV(HRD) buffer size. in bits. Set 0 to use the default VBV  buffer size.
-    uint32_t               vbvInitialDelay;       // Specifies the VBV(HRD) initial delay in bits. Set 0 to use the default VBV  initial delay.
     VkVideoEncodeH265QpKHR minQp;                 // Specifies the const or minimum or QP used for rate control.
     VkVideoEncodeH265QpKHR maxQp;                 // Specifies the maximum QP used for rate control.
     uint32_t               sliceCount;
@@ -96,8 +94,6 @@ struct EncoderConfigH265 : public EncoderConfig {
       , cuSize(CU_SIZE_32x32)               // TODO: adjust based on device capabilities
       , minTransformUnitSize(TU_SIZE_4x4)   // TODO: adjust based on device capabilities
       , maxTransformUnitSize(TU_SIZE_32x32) // TODO: adjust based on device capabilities
-      , vbvBufferSize()
-      , vbvInitialDelay()
       , minQp{}
       , maxQp{}
       , sliceCount(1)
@@ -156,7 +152,20 @@ struct EncoderConfigH265 : public EncoderConfig {
 
     virtual VkResult InitDeviceCapabilities(const VulkanDeviceContext* vkDevCtx) override;
 
-    virtual uint32_t GetDefaultVideoProfileIdc() override { return STD_VIDEO_H265_PROFILE_IDC_MAIN; };
+    virtual uint32_t GetDefaultVideoProfileIdc() override {
+        // Select profile based on bit depth and chroma format
+        // 12-bit or 444 chroma requires Range Extensions profile
+        if (encodeBitDepthLuma > 10 || encodeBitDepthChroma > 10 ||
+            encodeChromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR) {
+            return STD_VIDEO_H265_PROFILE_IDC_FORMAT_RANGE_EXTENSIONS;
+        }
+        // 10-bit with 420/422 uses Main10 profile
+        if (encodeBitDepthLuma > 8 || encodeBitDepthChroma > 8) {
+            return STD_VIDEO_H265_PROFILE_IDC_MAIN_10;
+        }
+        // 8-bit with 420/422 uses Main profile
+        return STD_VIDEO_H265_PROFILE_IDC_MAIN;
+    };
 
     // 1. First h.265 determine the number of the Dpb buffers required
     virtual int8_t InitDpbCount() override;
