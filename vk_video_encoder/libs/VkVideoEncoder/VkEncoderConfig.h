@@ -19,7 +19,11 @@
 
 #include <assert.h>
 #include <string.h>
+#include <string>
+#include <charconv>
+#include <cerrno>
 #include <atomic>
+#include <limits>
 #include "mio/mio.hpp"
 #include "vk_video/vulkan_video_codecs_common.h"
 #include "vk_video/vulkan_video_codec_h264std.h"
@@ -355,7 +359,8 @@ beach:
             offset += SkipY4mFrameHeader(offset);
         }
 
-        return offset;
+        assert(offset <= std::numeric_limits<size_t>::max());
+        return static_cast<size_t>(offset);
     }
 
     // Advances frame pointer with one frame.
@@ -379,7 +384,8 @@ beach:
             }
         }
 
-        m_currFrameOffset = offset;
+        assert(offset <= std::numeric_limits<size_t>::max());
+        m_currFrameOffset = static_cast<size_t>(offset);
 
         return m_currFrameOffset;
     }
@@ -413,7 +419,8 @@ beach:
             return 0;
         }
 
-        m_currFrameOffset = offset;
+        assert(offset <= std::numeric_limits<size_t>::max());
+        m_currFrameOffset = static_cast<size_t>(offset);
 
         return m_currFrameOffset;
     }
@@ -491,10 +498,6 @@ private:
     static inline bool
     ParseY4mInt (const char * str, uint32_t * out_value_ptr)
     {
-      uint32_t saved_errno;
-      uint32_t value;
-      bool ret;
-
       if (!str) {
         return false;
       }
@@ -502,19 +505,14 @@ private:
       if (*str == '\0') {
         return false;
       }
-
-      saved_errno = errno;
-      errno = 0;
-      value = (uint32_t)strtol (str, NULL, 0);
-      ret = (errno == 0);
-      errno = saved_errno;
-      if ((value > 0) && (value <= UINT32_MAX)) {
-        *out_value_ptr = value;
-      } else {
-        ret = false;
+      const char* last = str + strlen(str);
+      uint32_t value = 0;
+      auto [ptr, ec] = std::from_chars(str, last, value);
+      if (ec != std::errc{} || value == 0) {
+        return false;
       }
-
-      return ret;
+      *out_value_ptr = value;
+      return true;
     }
 
 private:
@@ -758,7 +756,6 @@ public:
     int32_t  queueId;
     VkVideoCodecOperationFlagBitsKHR codec;
     bool useDpbArray;
-    uint32_t videoProfileIdc;
     uint32_t numInputImages;
     EncoderInputImageParameters input;
     uint8_t  encodeBitDepthLuma;
@@ -788,8 +785,8 @@ public:
     VkVideoEncodeIntraRefreshCapabilitiesKHR intraRefreshCapabilities;
     VkVideoEncodeQualityLevelPropertiesKHR qualityLevelProperties;
     VkVideoEncodeRateControlModeFlagBitsKHR rateControlMode;
-    uint32_t averageBitrate; // kbits/sec
-    uint32_t maxBitrate;     // kbits/sec
+    uint32_t averageBitrate; // bits/sec (e.g., 5000000 = 5 Mbps)
+    uint32_t maxBitrate;     // bits/sec
     uint32_t hrdBitrate;
     uint32_t vbvBufferSize;     // Specifies the VBV(HRD) buffer size. in bits. Set 0 to use the default VBV buffer size.
     uint32_t vbvInitialDelay;   // Specifies the VBV(HRD) initial delay in bits. Set 0 to use the default VBV initial delay.
@@ -845,6 +842,16 @@ public:
 
     VulkanFilterYuvCompute::FilterType filterType;
 
+    // Adaptive Quantization (AQ) parameters
+    // Range: [-1.0, 1.0] valid, 0.0 = default/midpoint, < -1.0 (e.g., -2.0) = disabled
+    // If spatialAQStrength >= -1.0, spatial AQ is enabled
+    // If temporalAQStrength >= -1.0, temporal AQ is enabled
+    // If both >= -1.0, combined mode (ratio determines mix)
+    uint32_t enableAQ : 1;
+    float spatialAQStrength;  // [-1.0, 1.0] normalized, 0.0 = default, < -1.0 = disabled
+    float temporalAQStrength; // [-1.0, 1.0] normalized, 0.0 = default, < -1.0 = disabled
+    std::string aqDumpDir;    // Directory for AQ dump files (default: "./aqDump")
+
     uint32_t validate : 1;
     uint32_t validateVerbose : 1;
     uint32_t verbose : 1;
@@ -864,6 +871,9 @@ public:
     uint32_t enableOutOfOrderRecording : 1; // Testing only - don't use for production!
     uint32_t disableEncodeParameterOptimizations : 1;
 
+    int32_t  drmFormatModifierIndex; // -1 = disabled (OPTIMAL), >= 0 = index into non-linear modifier list
+    uint64_t selectedDrmFormatModifier; // resolved modifier value (set during InitEncoder)
+
     EncoderConfig()
     : refCount(0)
     , appName()
@@ -871,7 +881,6 @@ public:
     , queueId(0)
     , codec(VK_VIDEO_CODEC_OPERATION_NONE_KHR)
     , useDpbArray(false)
-    , videoProfileIdc((uint32_t)-1)
     , numInputImages(DEFAULT_NUM_INPUT_IMAGES)
     , input()
     , encodeBitDepthLuma(0)
@@ -949,6 +958,10 @@ public:
     , chroma_sample_loc_type()
     , inputFileHandler()
     , filterType(VulkanFilterYuvCompute::YCBCRCOPY)
+    , enableAQ(VK_FALSE)
+    , spatialAQStrength(-2.0f)   // < -1.0 means disabled
+    , temporalAQStrength(-2.0f)  // < -1.0 means disabled
+    , aqDumpDir("./aqDump")
     , validate(false)
     , validateVerbose(false)
     , verbose(false)
@@ -963,6 +976,8 @@ public:
     , enablePictureRowColReplication(1)
     , enableOutOfOrderRecording(false)
     , disableEncodeParameterOptimizations(false)
+    , drmFormatModifierIndex(-1)
+    , selectedDrmFormatModifier(0)
     { }
 
     virtual ~EncoderConfig() {}
@@ -1000,6 +1015,10 @@ public:
     void InitVideoProfile();
 
     int ParseArguments(int argc, const char *argv[]);
+
+    // Load base config from JSON file (encoder_config.schema.json). JSON is processed first;
+    // command-line args passed to ParseArguments override. Returns 0 on success, -1 on error.
+    int LoadFromJsonFile(const char* path);
 
     virtual int DoParseArguments(int argc, const char *argv[]) {
         if (argc > 0) {
@@ -1057,7 +1076,8 @@ public:
     // These functions should be overwritten from the codec-specific classes
     virtual VkResult InitDeviceCapabilities(const VulkanDeviceContext* vkDevCtx) { return VK_ERROR_INITIALIZATION_FAILED; };
 
-    virtual uint32_t GetDefaultVideoProfileIdc() { return 0; };
+    // Returns the codec-specific profile identifier (must be set by InitProfileLevel first)
+    virtual uint32_t GetCodecProfile() = 0;
 
     virtual int8_t InitDpbCount() { return 16; };
 

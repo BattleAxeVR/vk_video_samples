@@ -45,9 +45,6 @@ VkResult VkVideoEncoderH264::InitEncoderCodec(VkSharedBaseObj<EncoderConfig>& en
         return VK_ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR;
     }
 
-    // Initialize the codec profile and level before other encoder configuration
-    m_encoderConfig->InitProfileLevel();
-
     VkResult result = InitEncoder(encoderConfig);
     if (result != VK_SUCCESS) {
         fprintf(stderr, "\nERROR: InitEncoder() failed with ret(%d)\n", result);
@@ -379,22 +376,24 @@ VkResult VkVideoEncoderH264::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
 
             m_dpb264->FillStdReferenceInfo(slotIndex, &pFrameInfo->stdReferenceInfo[numReferenceSlots]);
 
-            pFrameInfo->stdDpbSlotInfo[numReferenceSlots].sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR;
-            pFrameInfo->stdDpbSlotInfo[numReferenceSlots].pStdReferenceInfo = &pFrameInfo->stdReferenceInfo[numReferenceSlots];
-
-            if (isIntraRefreshFrame) {
-                pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots].sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_INTRA_REFRESH_INFO_KHR;
-                pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots].dirtyIntraRefreshRegions =
-                    m_dpb264->GetDirtyIntraRefreshRegions(slotIndex);
-
-                pFrameInfo->stdDpbSlotInfo[numReferenceSlots].pNext = &pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots];
-            }
-
             pFrameInfo->referenceSlotsInfo[numReferenceSlots].sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR;
-            pFrameInfo->referenceSlotsInfo[numReferenceSlots].pNext = &pFrameInfo->stdDpbSlotInfo[numReferenceSlots];
+            pFrameInfo->referenceSlotsInfo[numReferenceSlots].pNext = nullptr;
             pFrameInfo->referenceSlotsInfo[numReferenceSlots].slotIndex = slotIndex;
             pFrameInfo->referenceSlotsInfo[numReferenceSlots].pPictureResource =
                         pFrameInfo->dpbImageResources[numReferenceSlots]->GetPictureResourceInfo();
+
+            pFrameInfo->stdDpbSlotInfo[numReferenceSlots].sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_DPB_SLOT_INFO_KHR;
+            pFrameInfo->stdDpbSlotInfo[numReferenceSlots].pNext = nullptr;
+            pFrameInfo->stdDpbSlotInfo[numReferenceSlots].pStdReferenceInfo = &pFrameInfo->stdReferenceInfo[numReferenceSlots];
+            vk::ChainNextVkStruct(pFrameInfo->referenceSlotsInfo[numReferenceSlots], pFrameInfo->stdDpbSlotInfo[numReferenceSlots]);
+
+            if (isIntraRefreshFrame) {
+                pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots].sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_INTRA_REFRESH_INFO_KHR;
+                pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots].pNext = nullptr;
+                pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots].dirtyIntraRefreshRegions =
+                    m_dpb264->GetDirtyIntraRefreshRegions(slotIndex);
+                vk::ChainNextVkStruct(pFrameInfo->referenceSlotsInfo[numReferenceSlots], pFrameInfo->referenceIntraRefreshInfo[numReferenceSlots]);
+            }
 
             numReferenceSlots++;
             assert(numReferenceSlots <= ARRAYSIZE(pFrameInfo->referenceSlotsInfo));
@@ -407,8 +406,8 @@ VkResult VkVideoEncoderH264::ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>&
     int8_t targetDpbSlot = m_dpb264->DpbPictureEnd(&pictureInfo, encodeFrameInfo->setupImageResource,
                                                    &m_h264.m_spsInfo, &pFrameInfo->stdSliceHeader[0],
                                                    &pFrameInfo->stdReferenceListsInfo, MAX_MEM_MGMNT_CTRL_OPS_COMMANDS);
-    if (targetDpbSlot >= VkEncDpbH264::MAX_DPB_SLOTS) {
-        targetDpbSlot = static_cast<int8_t>((encodeFrameInfo->setupImageResource!=nullptr) + refLists.refPicListCount[0] + refLists.refPicListCount[1] + 1);
+    if ((encodeFrameInfo->setupImageResource != nullptr) && (targetDpbSlot >= m_dpb264->GetMaxDPBSize())) {
+        assert(!"targetDpbSlot is out of bounds");
     }
     if (isReference) {
         assert(targetDpbSlot >= 0);

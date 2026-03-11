@@ -15,6 +15,8 @@
 */
 
 #include "VkVideoEncoder/VkEncoderConfigH264.h"
+#include <string>
+#include <charconv>
 
 int EncoderConfigH264::DoParseArguments(int argc, const char* argv[])
 {
@@ -22,7 +24,14 @@ int EncoderConfigH264::DoParseArguments(int argc, const char* argv[])
 
     for (int32_t i = 0; i < argc; i++) {
         if (args[i] == "--slices") {
-            if (++i >= argc || sscanf(args[i].c_str(), "%u", &sliceCount) != 1) {
+            if (++i >= argc) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+            const char* first = args[i].data();
+            const char* last = first + args[i].size();
+            auto [ptr, ec] = std::from_chars(first, last, sliceCount);
+            if (ec != std::errc{}) {
                 fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
                 return -1;
             }
@@ -453,15 +462,16 @@ void EncoderConfigH264::InitProfileLevel()
     if (profileIdc == STD_VIDEO_H264_PROFILE_IDC_INVALID) {
         profileIdc = STD_VIDEO_H264_PROFILE_IDC_BASELINE;
 
-        if ((GetMaxBFrameCount() > 0) || (entropyCodingMode == ENTROPY_CODING_MODE_CABAC))
+        // Upgrade to MAIN profile if using B-frames or CABAC entropy coding
+        if ((gopStructure.GetConsecutiveBFrameCount() > 0) || (entropyCodingMode == ENTROPY_CODING_MODE_CABAC))
             profileIdc = STD_VIDEO_H264_PROFILE_IDC_MAIN;
 
         if (use8x8Transform) {
             profileIdc = STD_VIDEO_H264_PROFILE_IDC_HIGH;
         }
 
-        if (((tuningMode == VK_VIDEO_ENCODE_TUNING_MODE_LOSSLESS_KHR) &&
-             (rateControlMode == VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR)) ||
+        // Upgrade to HIGH_444_PREDICTIVE for lossless encoding or 4:4:4 chroma
+        if ((tuningMode == VK_VIDEO_ENCODE_TUNING_MODE_LOSSLESS_KHR) ||
             (input.chromaSubsampling == VK_VIDEO_CHROMA_SUBSAMPLING_444_BIT_KHR)) {
             profileIdc = STD_VIDEO_H264_PROFILE_IDC_HIGH_444_PREDICTIVE;
         }
@@ -584,6 +594,13 @@ bool EncoderConfigH264::GetRateControlParameters(VkVideoEncodeRateControlInfoKHR
 
     pRateControlInfoH264->gopFrameCount = (gopStructure.GetGopFrameCount() > 0) ? gopStructure.GetGopFrameCount() : (uint32_t)GOP_LENGTH_DEFAULT;
     pRateControlInfoH264->idrPeriod = (gopStructure.GetIdrPeriod() > 0) ? gopStructure.GetIdrPeriod() : (uint32_t)IDR_PERIOD_DEFAULT;
+
+    // Validation: If idrPeriod is not 0, it must be >= gopFrameCount
+    // If gopFrameCount is very large (e.g., UINT32_MAX for infinite GOP), set idrPeriod to 0
+    if (pRateControlInfoH264->idrPeriod != 0 &&
+        pRateControlInfoH264->idrPeriod < pRateControlInfoH264->gopFrameCount) {
+        pRateControlInfoH264->idrPeriod = 0;  // Disable IDR period when GOP is larger
+    }
 
     return true;
 }

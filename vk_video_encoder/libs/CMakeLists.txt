@@ -16,8 +16,18 @@
 cmake_minimum_required(VERSION 3.20.0)
 project(${VULKAN_VIDEO_ENCODER_LIB}, LANGUAGES CXX)
 
+# simdjson (Apache-2.0) for encoder config JSON loading
+include(FetchContent)
+FetchContent_Declare(simdjson
+    GIT_REPOSITORY https://github.com/simdjson/simdjson.git
+    GIT_TAG        v3.6.2
+    GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(simdjson)
+
 set(LIBVKVIDEOENCODER_SRC
     ${VK_VIDEO_ENCODER_LIBS_SOURCE_ROOT}/../src/vulkan_video_encoder.cpp
+    ${VK_VIDEO_ENCODER_LIBS_SOURCE_ROOT}/../src/vulkan_video_encoder_ext.cpp
     ${VK_VIDEO_ENCODER_LIBS_SOURCE_ROOT}/VkVideoEncoder/VkEncoderConfigH264.cpp
     ${VK_VIDEO_ENCODER_LIBS_SOURCE_ROOT}/VkVideoEncoder/VkEncoderConfigH264.h
     ${VK_VIDEO_ENCODER_LIBS_SOURCE_ROOT}/VkVideoEncoder/VkEncoderDpbH264.cpp
@@ -41,6 +51,7 @@ set(LIBVKVIDEOENCODER_SRC
     ${VK_VIDEO_ENCODER_LIBS_SOURCE_ROOT}/VkVideoEncoder/VkVideoGopStructure.cpp
     ${VK_VIDEO_ENCODER_LIBS_SOURCE_ROOT}/VkVideoEncoder/VkVideoGopStructure.h
     ${VK_VIDEO_ENCODER_LIBS_SOURCE_ROOT}/VkVideoEncoder/VkVideoEncoder.h
+    ${VK_VIDEO_ENCODER_LIBS_SOURCE_ROOT}/json/EncoderConfigJsonLoader.cpp
     ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/YCbCrConvUtilsCpu.cpp
     ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/YCbCrConvUtilsCpu.h
     ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT}/VkCodecUtils/Helpers.h
@@ -91,6 +102,7 @@ set(LIBVKVIDEOENCODER_SRC
 )
 
 include_directories(BEFORE "${CMAKE_CURRENT_LIST_DIR}/../")
+include_directories(BEFORE "${CMAKE_CURRENT_LIST_DIR}")
 include_directories(BEFORE ${VULKAN_VIDEO_ENCODER_INCLUDE}/../libs)
 include_directories(BEFORE ${VULKAN_VIDEO_ENCODER_INCLUDE})
 include_directories(BEFORE ${VK_VIDEO_COMMON_LIBS_SOURCE_ROOT})
@@ -101,15 +113,32 @@ link_directories(
 
 add_library(${VULKAN_VIDEO_ENCODER_LIB} SHARED ${LIBVKVIDEOENCODER_SRC})
 # Link the libraries
-target_link_libraries(${VULKAN_VIDEO_ENCODER_LIB} PUBLIC ${SHADERC_SHARED_LIBRARY})
+target_link_libraries(${VULKAN_VIDEO_ENCODER_LIB} PUBLIC ${SHADERC_SHARED_LIBRARY} simdjson::simdjson)
 # Ensure the library depends on the generation of these files
 add_dependencies(${VULKAN_VIDEO_ENCODER_LIB} GenerateDispatchTables ${VULKAN_VIDEO_PARSER_LIB} ${SHADERC_LIB})
+
+# Link against nvenc_aq_vulkan if available
+if(NV_AQ_GPU_LIB_AVAILABLE AND TARGET ${NV_AQ_GPU_LIB_TARGET})
+    message(STATUS "Linking ${VULKAN_VIDEO_ENCODER_LIB} against ${NV_AQ_GPU_LIB_TARGET}")
+    target_link_libraries(${VULKAN_VIDEO_ENCODER_LIB} PUBLIC ${NV_AQ_GPU_LIB_TARGET})
+    add_dependencies(${VULKAN_VIDEO_ENCODER_LIB} ${NV_AQ_GPU_LIB_TARGET})
+endif()
 
 target_include_directories(${VULKAN_VIDEO_ENCODER_LIB} PUBLIC ${VULKAN_VIDEO_ENCODER_INCLUDE} ${VULKAN_VIDEO_ENCODER_INCLUDE}/../NvVideoParser PRIVATE include)
 target_compile_definitions(${VULKAN_VIDEO_ENCODER_LIB}
     PRIVATE VK_VIDEO_ENCODER_IMPLEMENTATION
     PUBLIC VK_VIDEO_ENCODER_SHAREDLIB
 )
+
+# Add NV_AQ_GPU_LIB_SUPPORTED definition and include paths if the library is available
+if(NV_AQ_GPU_LIB_AVAILABLE)
+    target_compile_definitions(${VULKAN_VIDEO_ENCODER_LIB} PRIVATE NV_AQ_GPU_LIB_SUPPORTED=1)
+    # Add all AQ include directories from the centralized list
+    if(NV_AQ_GPU_LIB_INCLUDE_DIRS)
+        target_include_directories(${VULKAN_VIDEO_ENCODER_LIB} PUBLIC ${NV_AQ_GPU_LIB_INCLUDE_DIRS})
+        message(STATUS "Added AQ include directories to ${VULKAN_VIDEO_ENCODER_LIB}")
+    endif()
+endif()
 
 find_package(Threads)
 
@@ -126,10 +155,27 @@ endif()
 
 add_library(${VULKAN_VIDEO_ENCODER_STATIC_LIB} STATIC ${LIBVKVIDEOENCODER_SRC})
 # Link the libraries
-target_link_libraries(${VULKAN_VIDEO_ENCODER_STATIC_LIB} PUBLIC ${SHADERC_SHARED_LIBRARY})
+target_link_libraries(${VULKAN_VIDEO_ENCODER_STATIC_LIB} PUBLIC ${SHADERC_SHARED_LIBRARY} simdjson::simdjson)
 # Ensure the library depends on the generation of these files
 add_dependencies(${VULKAN_VIDEO_ENCODER_STATIC_LIB} GenerateDispatchTables ${VULKAN_VIDEO_PARSER_LIB} ${SHADERC_LIB})
+
+# Link against nvenc_aq_vulkan if available
+if(NV_AQ_GPU_LIB_AVAILABLE AND TARGET ${NV_AQ_GPU_LIB_TARGET})
+    message(STATUS "Linking ${VULKAN_VIDEO_ENCODER_STATIC_LIB} against ${NV_AQ_GPU_LIB_TARGET}")
+    target_link_libraries(${VULKAN_VIDEO_ENCODER_STATIC_LIB} PUBLIC ${NV_AQ_GPU_LIB_TARGET})
+    add_dependencies(${VULKAN_VIDEO_ENCODER_STATIC_LIB} ${NV_AQ_GPU_LIB_TARGET})
+endif()
 target_include_directories(${VULKAN_VIDEO_ENCODER_STATIC_LIB} PUBLIC ${VULKAN_VIDEO_ENCODER_INCLUDE} ${VULKAN_VIDEO_ENCODER_INCLUDE}/../NvVideoParser PRIVATE include)
+
+# Add NV_AQ_GPU_LIB_SUPPORTED definition and include paths if the library is available
+if(NV_AQ_GPU_LIB_AVAILABLE)
+    target_compile_definitions(${VULKAN_VIDEO_ENCODER_STATIC_LIB} PRIVATE NV_AQ_GPU_LIB_SUPPORTED=1)
+    # Add all AQ include directories from the centralized list
+    if(NV_AQ_GPU_LIB_INCLUDE_DIRS)
+        target_include_directories(${VULKAN_VIDEO_ENCODER_STATIC_LIB} PUBLIC ${NV_AQ_GPU_LIB_INCLUDE_DIRS})
+        message(STATUS "Added AQ include directories to ${VULKAN_VIDEO_ENCODER_STATIC_LIB}")
+    endif()
+endif()
 
 install(TARGETS ${VULKAN_VIDEO_ENCODER_LIB} ${VULKAN_VIDEO_ENCODER_STATIC_LIB}
                 RUNTIME DESTINATION ${CMAKE_INSTALL_LIBDIR}

@@ -305,9 +305,6 @@ int8_t VkEncDpbH264::DpbPictureEnd(const PicInfoH264 *pPicInfo,
                     int32_t i = 0;
                     // does current have the lowest value of PicOrderCnt?
                     for (; i < MAX_DPB_SLOTS; i++) {
-                        // If we decide to support MVC, the following check must
-                        // be performed only if the view_id of the current DPB
-                        // entry matches the view_id in m_DPB[i].
 
                         assert(m_DPB[i].topFOC >= 0);
                         assert(m_DPB[i].bottomFOC >= 0);
@@ -321,6 +318,56 @@ int8_t VkEncDpbH264::DpbPictureEnd(const PicInfoH264 *pPicInfo,
                     if (i < MAX_DPB_SLOTS) {
                         DpbBumping(false);
                     } else {
+                        // If we reach this point, it means, DPB is full and no slot is available for the current picture.
+                        // Vulkan video encoding requires a DPB slot for the current picture whenever VkVideoEncodeFrameInfo::pSetupReferenceSlot
+                        // is being set. This application always populates this field, and without a valid DPB slot the API cannot be
+                        // configured correctly.
+
+                        // Corner case: DpbBumping() attempts to free a DPB slot when certain conditions are met.
+                        // One of the condition checked is whether the picture is marked as "needed for output".
+                        // As part of this process, it first outputs the picture by marking the it as "not needed for output".
+                        // Before actually clearing the slot, it checks whether the picture is "unused for reference".
+                        // If so, the slot is emptied. However, if the picture is still "used for reference", the function
+                        // only marks the picture as "not needed for output" and stops there.
+                        //
+                        // The issue arises when a picture is still "used for reference" at the moment DpbBumping() process, but later
+                        // during subsequent DPB management, it becomes "unused for reference". Because the picture was already
+                        // marked as "not needed for output" at the time last DpbBumping() process, it will no longer be considered by
+                        // the bumping logic when the next DpbBumping() process is called. This leaves the slot stuck in the DPB
+                        // even though it is no longer needed for output and not needed for reference.
+                        //
+                        // To avoid leaving such stale entries in the DPB, perform an explicit check for any slot that is
+                        // both "not needed for output" and "unused for reference", and remove it when encountered.
+                        //
+                        //
+                        // Because there is no reference‑counting tied to the "needed for output"/"used for reference"
+                        // and "not needed for output"/"unused for reference", simply marking a picture as "unused for reference"
+                        // does not immediately make its dpbImageView safe to reuse. Pictures still in the encode queue may
+                        // reference it, so releasing the dpbImageView too early can lead to invalid references.
+                        // Moving this cleanup logic into DpbBumping() can therefore cause problems if the picture is still
+                        // referenced at that moment. To avoid such issues, execute this logic only when it is clear that no empty
+                        // DPB slot can be found for the current picture.
+                        //
+                        // TODO: As an enhacement,
+                        //  1. the dpb slot with lowest PicOrderCnt value can be emptied first.
+                        //  2. tie the reference count to the markings "needed for output"/"used for reference"
+                        //     and "not needed for output"/"unused for reference" for cleaner implementation.
+                        int32_t i = 0;
+                        for (i = 0; i < MAX_DPB_SLOTS; i++) {
+                            if ((m_DPB[i].state & DPB_TOP) && !m_DPB[i].top_needed_for_output && (m_DPB[i].top_field_marking == MARKING_UNUSED) &&
+                                (m_DPB[i].state & DPB_BOTTOM) && !m_DPB[i].bottom_needed_for_output && (m_DPB[i].bottom_field_marking == MARKING_UNUSED)) {
+
+                                m_DPB[i].state = DPB_EMPTY;
+                                ReleaseFrame(m_DPB[i].dpbImageView); // release the image resource
+                                break;
+                            }
+                        }
+                        if (i >= MAX_DPB_SLOTS) {
+                            // Reaching this point indicates an error in the DPB management logic.
+                            assert(!"Failed to find a free DPB slot");
+                            break; // exit while (1)
+                        }
+#if 0
                         // DPB is full, current has lowest value of PicOrderCnt
                         if (!pPicInfo->field_pic_flag) {
                             // frame: output current picture immediately
@@ -337,6 +384,7 @@ int8_t VkEncDpbH264::DpbPictureEnd(const PicInfoH264 *pPicInfo,
                         }
 
                         break;  // exit while (1)
+#endif
                     }
                 } else {
                     for (m_currDpbIdx = 0; m_currDpbIdx < MAX_DPB_SLOTS; m_currDpbIdx++) {
@@ -424,7 +472,7 @@ void VkEncDpbH264::FillFrameNumGaps(const PicInfoH264 *pPicInfo, const StdVideoH
             pCurDPBEntry->not_existing = true;
             // C.4.2
             pCurDPBEntry->top_needed_for_output = pCurDPBEntry->bottom_needed_for_output = false;
-            pCurDPBEntry->state = DPB_FRAME;  // frame
+            pCurDPBEntry->state = DPB_FRAME;
             // this differs from the standard
             // empty frame buffers marked as "not needed for output" and "unused for reference"
             for (int32_t i = 0; i < MAX_DPB_SLOTS; i++) {
@@ -432,7 +480,7 @@ void VkEncDpbH264::FillFrameNumGaps(const PicInfoH264 *pPicInfo, const StdVideoH
                         (!m_DPB[i].top_needed_for_output && m_DPB[i].top_field_marking == MARKING_UNUSED)) &&
                         (!(m_DPB[i].state & DPB_BOTTOM) ||
                          (!m_DPB[i].bottom_needed_for_output && m_DPB[i].bottom_field_marking == MARKING_UNUSED))) {
-                    m_DPB[i].state = DPB_EMPTY;  // empty
+                    m_DPB[i].state = DPB_EMPTY;
                     ReleaseFrame(m_DPB[i].dpbImageView);
                 }
             }
@@ -478,10 +526,6 @@ bool VkEncDpbH264::IsDpbEmpty()
 // C.4.5.3
 void VkEncDpbH264::DpbBumping(bool alwaysbump)
 {
-    // If we decide to implement MVC, we'll need to loop over all the views
-    // configured for this session and perform each check in the for loop
-    // immediately below only if the current DPB entry's view_id matches
-    // that of m_DPB[i].
 
     // select the frame buffer that contains the picture having the smallest value
     // of PicOrderCnt of all pictures in the DPB marked as "needed for output"
@@ -506,11 +550,9 @@ void VkEncDpbH264::DpbBumping(bool alwaysbump)
         prevOutputIdx = minFoc;
 
         // empty frame buffer
-        if ((!(m_DPB[minFoc].state & DPB_TOP) ||
-                (!m_DPB[minFoc].top_needed_for_output && m_DPB[minFoc].top_field_marking == MARKING_UNUSED)) &&
-                (!(m_DPB[minFoc].state & DPB_BOTTOM) ||
-                 (!m_DPB[minFoc].bottom_needed_for_output && m_DPB[minFoc].bottom_field_marking == MARKING_UNUSED))) {
-            m_DPB[minFoc].state = 0;
+        if ((!(m_DPB[minFoc].state & DPB_TOP) || m_DPB[minFoc].top_field_marking == MARKING_UNUSED) &&
+            (!(m_DPB[minFoc].state & DPB_BOTTOM) || m_DPB[minFoc].bottom_field_marking == MARKING_UNUSED)) {
+            m_DPB[minFoc].state = DPB_EMPTY;
             ReleaseFrame(m_DPB[minFoc].dpbImageView);
         }
     }
@@ -608,10 +650,6 @@ void VkEncDpbH264::SlidingWindowMemoryManagememt(const PicInfoH264 *pPicInfo, co
         int32_t numShortTerm = 0;
         int32_t numLongTerm = 0;
         for (int32_t i = 0; i < MAX_DPB_SLOTS; i++) {
-            // If we decide to implement MVC, the checks in this loop must only be
-            // performed if the view_id from the current DPB entry matches that of
-            // m_DPB[i].
-
             if ((m_DPB[i].top_field_marking == MARKING_SHORT || m_DPB[i].bottom_field_marking == MARKING_SHORT)) {
                 numShortTerm++;
                 if (m_DPB[i].frameNumWrap < minFrameNumWrap) {
@@ -652,10 +690,7 @@ void VkEncDpbH264::AdaptiveMemoryManagement(const PicInfoH264 *pPicInfo, const S
 
             picNumX = currPicNum - (mmco[k].difference_of_pic_nums_minus1 + 1);  // (8-40)
             for (int32_t i = 0; i < MAX_DPB_SLOTS; i++) {
-                // If we decide to implement MVC, the checks in this loop must only be
-                // performed if the view_id from the current DPB entry matches that of
-                // m_DPB[i].
-
+ 
                 if (m_DPB[i].top_field_marking == MARKING_SHORT && m_DPB[i].topPicNum == picNumX)
                     m_DPB[i].top_field_marking = MARKING_UNUSED;
                 if (m_DPB[i].bottom_field_marking == MARKING_SHORT && m_DPB[i].bottomPicNum == picNumX)
@@ -949,7 +984,7 @@ void VkEncDpbH264::FlushDpb()
         if ((!(m_DPB[i].state & DPB_TOP) || (!m_DPB[i].top_needed_for_output && m_DPB[i].top_field_marking == MARKING_UNUSED)) &&
                 (!(m_DPB[i].state & DPB_BOTTOM) ||
                  (!m_DPB[i].bottom_needed_for_output && m_DPB[i].bottom_field_marking == MARKING_UNUSED))) {
-            m_DPB[i].state = DPB_EMPTY;  // empty
+            m_DPB[i].state = DPB_EMPTY;
             ReleaseFrame(m_DPB[i].dpbImageView);
         }
     }
