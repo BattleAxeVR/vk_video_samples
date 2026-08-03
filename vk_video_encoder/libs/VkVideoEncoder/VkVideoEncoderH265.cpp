@@ -38,8 +38,9 @@ VkResult CreateVideoEncoderH265(const VulkanDeviceContext* vkDevCtx,
 
 VkResult VkVideoEncoderH265::InitEncoderCodec(VkSharedBaseObj<EncoderConfig>& encoderConfig)
 {
-    m_encoderConfig = encoderConfig->GetEncoderConfigh265();
-    assert(m_encoderConfig);
+    auto* h265Config = encoderConfig->GetEncoderConfigh265();
+    assert(h265Config);
+    m_encoderConfig = std::shared_ptr<EncoderConfigH265>(encoderConfig, h265Config);
 
     if (m_encoderConfig->codec != VK_VIDEO_CODEC_OPERATION_ENCODE_H265_BIT_KHR) {
         return VK_ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR;
@@ -523,6 +524,15 @@ VkResult VkVideoEncoderH265::EncodeFrame(VkSharedBaseObj<VkVideoEncodeFrameInfo>
         for (uint32_t i = 0; i < pFrameInfo->pictureInfo.naluSliceSegmentEntryCount; i++) {
             pFrameInfo->naluSliceSegmentInfo[i].constantQp = constantQp;
         }
+        if (getenv("VKENC_DEBUG_PSNR")) {
+            fprintf(stderr, "[QPDBG] picType=%d constantQp=%d (qpI=%d qpP=%d qpB=%d) rcMode=%d\n",
+                    (int)encodeFrameInfo->gopPosition.pictureType, constantQp,
+                    encodeFrameInfo->constQp.qpIntra, encodeFrameInfo->constQp.qpInterP,
+                    encodeFrameInfo->constQp.qpInterB, (int)m_rateControlInfo.rateControlMode);
+        }
+    } else if (getenv("VKENC_DEBUG_PSNR")) {
+        fprintf(stderr, "[QPDBG] rcMode=%d NOT DISABLED (picType=%d) -> QP not forced\n",
+                (int)m_rateControlInfo.rateControlMode, (int)encodeFrameInfo->gopPosition.pictureType);
     }
 
     pFrameInfo->stdPictureInfo.flags.is_reference = m_encoderConfig->gopStructure.IsFrameReference(encodeFrameInfo->gopPosition);

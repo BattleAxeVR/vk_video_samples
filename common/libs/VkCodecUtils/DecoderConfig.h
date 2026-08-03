@@ -28,7 +28,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
-#include <charconv>
+#include <cstdlib>
 #include <cstring>
 #include "vulkan_interfaces.h"
 #include "VkCodecUtils/Helpers.h"
@@ -77,12 +77,14 @@ struct DecoderConfig {
         directMode = false;
         enableHwLoadBalancing = false;
         selectVideoWithComputeQueue = false;
+        noDeviceFallback = false;
         outputy4m = true; // by default, use Y4M
         outputcrcPerFrame = false;
         outputcrc = false;
         enableExternalConsumerExport = false;
         exportPreferCompressed = true;   // prefer L2-compressed DRM modifier by default
         exportPreferSmallestBlockHeight = true;
+        inlineSessionParameters = false;
         crcOutputFileName.clear();
         help = false;
     }
@@ -167,6 +169,13 @@ struct DecoderConfig {
                 "Validate input bitstream and be verbose",
                 [this](const char **args, const ProgramArgs &a) {
                     validate = true;
+                    validateVerbose = true;
+                    verbose = true;
+                    return true;
+                }},
+            {"--verbose", nullptr, 0,
+                "Be verbose",
+                [this](const char **args, const ProgramArgs &a) {
                     verbose = true;
                     return true;
                 }},
@@ -259,14 +268,9 @@ struct DecoderConfig {
                 }},
             {"--deviceID", "-deviceID", 1, "Hex ID of the device to be used",
                 [this](const char **args, const ProgramArgs &a) {
-                    const char* first = args[0];
-                    const char* last = first + strlen(first);
-                    if (strlen(first) > 2 && first[0] == '0' && (first[1] == 'x' || first[1] == 'X')) {
-                        first += 2;
-                    }
-                    uint32_t val = 0;
-                    auto [ptr, ec] = std::from_chars(first, last, val, 16);
-                    if (ec != std::errc{}) {
+                    char* end = nullptr;
+                    unsigned long val = strtoul(args[0], &end, 16);
+                    if (end == args[0] || *end != '\0') {
                         std::cerr << "Invalid deviceID hex value: " << args[0] << std::endl;
                         return false;
                     }
@@ -284,6 +288,11 @@ struct DecoderConfig {
                                   << std::endl;
                         return false;
                     }
+                    return true;
+                }},
+            {"--noDeviceFallback", nullptr, 0, "Don't try other GPUs if first device doesn't meet requirements",
+                [this](const char **args, const ProgramArgs &a) {
+                    noDeviceFallback = true;
                     return true;
                 }},
             {"--direct", nullptr, 0, "Direct to display mode",
@@ -330,16 +339,14 @@ struct DecoderConfig {
                     std::istringstream stream(args[0]);
                     std::string token;
                     while (std::getline(stream, token, ',')) {
-                        const char* tfirst = token.c_str();
-                        const char* tlast = tfirst + token.size();
-                        uint32_t initValue = 0;
-                        auto [tptr, tec] = std::from_chars(tfirst, tlast, initValue, 16);
-                        if (tec != std::errc{} || tptr != tlast) {
+                        char* tend = nullptr;
+                        unsigned long initValue = strtoul(token.c_str(), &tend, 16);
+                        if (tend == token.c_str() || *tend != '\0') {
                             std::cerr << "Failed to parse the following initial CRC value:"
                                   << token << std::endl;
                             return false;
                         }
-                        crcInitValueTemp.push_back(initValue);
+                        crcInitValueTemp.push_back(static_cast<uint32_t>(initValue));
                     }
 
                     crcInitValue = crcInitValueTemp;
@@ -364,6 +371,12 @@ struct DecoderConfig {
             {"--headless", nullptr, 0, "No display window (decoder is always headless)",
                 [this](const char **args, const ProgramArgs &a) {
                     noPresent = true;
+                    return true;
+                }},
+            {"--inlineParams", nullptr, 0,
+                "Use inline session parameters (requires driver support for VK_KHR_video_maintenance2)",
+                [this](const char **, const ProgramArgs &) {
+                    inlineSessionParameters = true;
                     return true;
                 }},
         };
@@ -472,12 +485,14 @@ struct DecoderConfig {
     uint32_t noPresent : 1;
     uint32_t enableHwLoadBalancing : 1;
     uint32_t selectVideoWithComputeQueue : 1;
+    uint32_t noDeviceFallback : 1;
     uint32_t outputy4m : 1;
     uint32_t outputcrc : 1;
     uint32_t outputcrcPerFrame : 1;
     uint32_t enableExternalConsumerExport : 1;
     uint32_t exportPreferCompressed : 1;
     uint32_t exportPreferSmallestBlockHeight : 1;
+    uint32_t inlineSessionParameters : 1;
     // Decoder service extensions
     std::string remotePresent;
     std::string presenterPath;

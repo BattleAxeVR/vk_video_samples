@@ -15,6 +15,7 @@
 */
 
 #include <cstring>
+#include <string>
 #include <inttypes.h>
 #include <vulkan/vulkan.h>
 #include "nvidia_utils/vulkan/ycbcrvkinfo.h"
@@ -24,7 +25,7 @@
 #include "VulkanDecodedFrame.h"
 #include "Helpers.h"
 #include "VkVideoFrameOutput.h"
-#include "crcgenerator.h"
+#include "VkCodecUtils/VkVideoCrc.h"
 
 template<typename T>
 static void CopyPlaneData(const uint8_t* pSrc, uint8_t* pDst,
@@ -55,30 +56,18 @@ public:
                           bool outputcrcPerFrame,
                           const char* crcOutputFile,
                           const std::vector<uint32_t>& crcInitValue)
-        : m_refCount(0)
-        , m_outputFile(nullptr)
+        : m_outputFile(nullptr)
         , m_pLinearMemory(nullptr)
         , m_allocationSize(0)
         , m_firstFrame(true)
         , m_height(0)
         , m_width(0)
         , m_outputy4m(outputy4m)
-        , m_outputcrcPerFrame(outputcrcPerFrame)
-        , m_crcOutputFile(nullptr)
-        , m_crcInitValue(crcInitValue)
-        , m_crcAllocation()
         , m_frameRateNum(30)
-        , m_frameRateDen(1) {
-        if (crcOutputFile != nullptr) {
-            m_crcOutputFile = fopen(crcOutputFile, "w");
-        }
-
-        if (!m_crcInitValue.empty()) {
-            m_crcAllocation.resize(m_crcInitValue.size());
-            for (size_t i = 0; i < m_crcInitValue.size(); i += 1) {
-                m_crcAllocation[i] = m_crcInitValue[i];
-            }
-        }
+        , m_frameRateDen(1)
+        , m_crc() {
+        const std::string crcPath = (crcOutputFile != nullptr) ? std::string(crcOutputFile) : std::string();
+        m_crc.BeginCrcCalculation(crcInitValue, outputcrcPerFrame, crcPath);
     }
 
     virtual ~VkVideoFrameToFileImpl() override {
@@ -92,32 +81,7 @@ public:
             m_outputFile = nullptr;
         }
 
-        if (m_crcOutputFile) {
-            if (!m_crcAllocation.empty()) {
-                fprintf(m_crcOutputFile, "CRC: ");
-                for (size_t i = 0; i < m_crcInitValue.size(); i += 1) {
-                    fprintf(m_crcOutputFile, "0x%08X ", m_crcAllocation[i]);
-                }
-                fprintf(m_crcOutputFile, "\n");
-            }
-
-            if (m_crcOutputFile != stdout) {
-                fclose(m_crcOutputFile);
-            }
-            m_crcOutputFile = nullptr;
-        }
-    }
-
-    virtual int32_t AddRef() override {
-        return ++m_refCount;
-    }
-
-    virtual int32_t Release() override {
-        uint32_t ret = --m_refCount;
-        if (ret == 0) {
-            delete this;
-        }
-        return ret;
+        m_crc.EndCrcCalculation(true);
     }
 
     virtual void SetFrameRate(uint32_t frameRateNum, uint32_t frameRateDen) override {
@@ -145,42 +109,69 @@ public:
 
         assert((pFrame->displayWidth >= 0) && (pFrame->displayHeight >= 0));
 
-        WaitAndGetStatus(vkDevCtx,
-                        *vkDevCtx,
-                        pFrame->frameCompleteFence,
-                        pFrame->queryPool,
-                        pFrame->startQueryId,
-                        pFrame->pictureIndex, false, "frameCompleteFence");
+        // Wait for decode+filter to complete using timeline semaphore.
+        // The TL semaphore value is stable (tied to decode order, not to a
+        // reusable fence), so it cannot be reset by slot recycling.
+        if (pFrame->frameCompleteSemaphore != VK_NULL_HANDLE &&
+            pFrame->frameCompleteDoneSemValue > 0) {
+            uint64_t preWaitValue = 0;
+            vkDevCtx->GetSemaphoreCounterValue(*vkDevCtx, pFrame->frameCompleteSemaphore, &preWaitValue);
+            VkSemaphoreWaitInfo waitInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                                             nullptr, 0, 1,
+                                             &pFrame->frameCompleteSemaphore,
+                                             &pFrame->frameCompleteDoneSemValue };
+            VkResult semResult = vkDevCtx->WaitSemaphores(*vkDevCtx, &waitInfo,
+                                                           10ULL * 1000ULL * 1000ULL * 1000ULL /* 10s */);
+            if (semResult != VK_SUCCESS) {
+                uint64_t postWaitValue = 0;
+                vkDevCtx->GetSemaphoreCounterValue(*vkDevCtx, pFrame->frameCompleteSemaphore, &postWaitValue);
+                fprintf(stderr, "ERROR: Timeline semaphore wait for frame %d (displayOrder=%lld) "
+                        "failed with result %d (expected TL=%llu, before=%llu, after=%llu)\n",
+                        pFrame->pictureIndex, (long long)pFrame->displayOrder,
+                        semResult, (unsigned long long)pFrame->frameCompleteDoneSemValue,
+                        (unsigned long long)preWaitValue, (unsigned long long)postWaitValue);
+            }
+        } else if (pFrame->frameCompleteFence != VK_NULL_HANDLE) {
+            // Fallback to fence if no TL semaphore available
+            WaitAndGetStatus(vkDevCtx,
+                            *vkDevCtx,
+                            pFrame->frameCompleteFence,
+                            pFrame->queryPool,
+                            pFrame->startQueryId,
+                            pFrame->pictureIndex, false, "frameCompleteFence");
+        }
+        // else: both semaphore and fence are null — caller (dump pool) already handled sync
 
         VkFormat format = imageResource->GetImageCreateInfo().format;
         const VkMpFormatInfo* mpInfo = YcbcrVkFormatInfo(format);
         size_t usedBufferSize = ConvertFrameToNv12(vkDevCtx, pFrame->displayWidth, pFrame->displayHeight,
                                                   imageResource, pOutputBuffer, mpInfo);
 
-        if (m_outputcrcPerFrame && m_crcOutputFile) {
-            fprintf(m_crcOutputFile, "CRC Frame[%lld]:", (long long)pFrame->displayOrder);
-            for (size_t i = 0; i < m_crcInitValue.size(); i += 1) {
-                uint32_t frameCrc = m_crcInitValue[i];
-                getCRC(&frameCrc, pOutputBuffer, usedBufferSize, Crc32Table);
-                fprintf(m_crcOutputFile, "0x%08X ", frameCrc);
-            }
-            fprintf(m_crcOutputFile, "\n");
-            if (m_crcOutputFile != stdout) {
-                fflush(m_crcOutputFile);
-            }
+        if (m_crc.Enabled()) {
+            m_crc.UpdateCrc(pOutputBuffer, usedBufferSize);
+            m_crc.SignalFrameEnd(static_cast<uint32_t>(pFrame->displayOrder));
         }
 
-        if (!m_crcAllocation.empty()) {
-            for (size_t i = 0; i < m_crcAllocation.size(); i += 1) {
-                getCRC(&m_crcAllocation[i], pOutputBuffer, usedBufferSize, Crc32Table);
-            }
-        }
-
+        size_t writeResult;
         if (m_outputy4m) {
-            return WriteFrameToFileY4M(0, usedBufferSize, pFrame->displayWidth, pFrame->displayHeight, mpInfo);
+            writeResult = WriteFrameToFileY4M(0, usedBufferSize, pFrame->displayWidth, pFrame->displayHeight, mpInfo);
         } else {
-            return WriteDataToFile(0, usedBufferSize);
+            writeResult = WriteDataToFile(0, usedBufferSize);
         }
+
+        // Signal consumer-done timeline semaphore so the decoder knows
+        // this frame slot can be safely reused.
+        if (pFrame->consumerCompleteSemaphore != VK_NULL_HANDLE &&
+            pFrame->frameConsumerDoneSemValue > 0) {
+            VkSemaphoreSignalInfo signalInfo = { VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+                                                  nullptr,
+                                                  pFrame->consumerCompleteSemaphore,
+                                                  pFrame->frameConsumerDoneSemValue };
+            vkDevCtx->SignalSemaphore(*vkDevCtx, &signalInfo);
+            pFrame->hasConsummerSignalSemaphore = true;
+        }
+
+        return writeResult;
     }
 
     bool hasExtension(const char* fileName, const char* extension) {
@@ -259,6 +250,8 @@ public:
             fprintf(m_outputFile, "A1:1 ");
             if (mpInfo->planesLayout.secondaryPlaneSubsampledX == false) {
                 fprintf(m_outputFile, "C444");
+            } else if (mpInfo->planesLayout.secondaryPlaneSubsampledY == false) {
+                fprintf(m_outputFile, "C422");
             } else {
                 fprintf(m_outputFile, "C420");
             }
@@ -418,16 +411,7 @@ public:
     }
 
     virtual size_t GetCrcValues(uint32_t* pCrcValues, size_t buffSize) const override {
-        if (pCrcValues == nullptr) {
-            return 0;
-        }
-
-        size_t numValuesToWrite = std::min(buffSize, m_crcAllocation.size());
-        for (size_t i = 0; i < numValuesToWrite; i++) {
-            pCrcValues[i] = m_crcAllocation[i];
-        }
-
-        return numValuesToWrite;
+        return m_crc.GetCrcValues(pCrcValues, buffSize);
     }
 
 private:
@@ -461,7 +445,6 @@ private:
     }
 
 private:
-    std::atomic<int32_t>    m_refCount;
     FILE*    m_outputFile;
     uint8_t* m_pLinearMemory;
     size_t   m_allocationSize;
@@ -469,12 +452,9 @@ private:
     size_t   m_height;
     size_t   m_width;
     bool     m_outputy4m;
-    bool     m_outputcrcPerFrame;
-    FILE*    m_crcOutputFile;
-    std::vector<uint32_t> m_crcInitValue;
-    std::vector<uint32_t> m_crcAllocation;
     uint32_t m_frameRateNum;
     uint32_t m_frameRateDen;
+    VkVideoCrc m_crc;
 };
 
 // Define the static member for invalid instance
@@ -499,6 +479,6 @@ VkResult VkVideoFrameOutput::Create(const char* fileName,
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
-    frameToFile = newFrameToFile;
+    frameToFile.reset(newFrameToFile);
     return VK_SUCCESS;
 }

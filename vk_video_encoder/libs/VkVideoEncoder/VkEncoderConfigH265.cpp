@@ -16,7 +16,7 @@
 
 #include <math.h>       /* sqrt */
 #include <string>
-#include <charconv>
+#include <cstdlib>
 #include "VkVideoEncoder/VkEncoderConfigH265.h"
 
 static void SetupAspectRatio(StdVideoH265SequenceParameterSetVui *vui, uint32_t width, uint32_t height,
@@ -79,11 +79,30 @@ int EncoderConfigH265::DoParseArguments(int argc, const char* argv[])
                 fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
                 return -1;
             }
-            const char* first = args[i].data();
-            const char* last = first + args[i].size();
-            auto [ptr, ec] = std::from_chars(first, last, sliceCount);
-            if (ec != std::errc{}) {
+            char* end = nullptr;
+            sliceCount = static_cast<int32_t>(strtol(args[i].c_str(), &end, 10));
+            if (end == args[i].c_str()) {
                 fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+        } else if (args[i] == "--profile") {
+            if (++i >= argc) {
+                fprintf(stderr, "invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+            std::string profileStr = args[i];
+            if (profileStr == "main" || profileStr == "0") {
+                profile = STD_VIDEO_H265_PROFILE_IDC_MAIN;
+            } else if (profileStr == "main10" || profileStr == "1") {
+                profile = STD_VIDEO_H265_PROFILE_IDC_MAIN_10;
+            } else if (profileStr == "mainstill" || profileStr == "2") {
+                profile = STD_VIDEO_H265_PROFILE_IDC_MAIN_STILL_PICTURE;
+            } else if (profileStr == "range" || profileStr == "3") {
+                profile = STD_VIDEO_H265_PROFILE_IDC_FORMAT_RANGE_EXTENSIONS;
+            } else if (profileStr == "scc" || profileStr == "4") {
+                profile = STD_VIDEO_H265_PROFILE_IDC_SCC_EXTENSIONS;
+            } else {
+                fprintf(stderr, "Invalid H.265 profile: %s\n", profileStr.c_str());
                 return -1;
             }
         } else {
@@ -205,26 +224,26 @@ uint32_t EncoderConfigH265::GetMaxDpbSize(uint32_t pictureSizeInSamplesY, int32_
     return std::min<uint32_t>(maxDpbSize, STD_VIDEO_H265_MAX_DPB_SIZE);
 }
 
-uint32_t EncoderConfigH265::GetCtbAlignedPicSizeInSamples(uint32_t& picWidthInCtbsY, uint32_t& picHeightInCtbsY, bool minCtbsY)
+uint32_t EncoderConfigH265::GetCtbAlignedPicSizeInSamples(uint32_t& alignedPicWidth, uint32_t& alignedPicHeight, bool minCtbsY)
 {
     if (minCtbsY) {
         uint32_t minCbLog2SizeY = cuMinSize + 3;
         uint32_t minCbSizeY = 1 << minCbLog2SizeY;
-        picWidthInCtbsY     = AlignSize(encodeWidth, minCbSizeY);
-        picHeightInCtbsY    = AlignSize(encodeHeight, minCbSizeY);
+        alignedPicWidth     = AlignSize(encodeWidth, minCbSizeY);
+        alignedPicHeight    = AlignSize(encodeHeight, minCbSizeY);
     } else {
         uint32_t ctbLog2SizeY = cuSize + 3;
         uint32_t ctbSizeY     = 1 << ctbLog2SizeY;
-        picWidthInCtbsY       = AlignSize(encodeWidth, ctbSizeY);
-        picHeightInCtbsY      = AlignSize(encodeHeight, ctbSizeY);
+        alignedPicWidth       = AlignSize(encodeWidth, ctbSizeY);
+        alignedPicHeight      = AlignSize(encodeHeight, ctbSizeY);
     }
-    return picWidthInCtbsY * picHeightInCtbsY;
+    return alignedPicWidth * alignedPicHeight;
 }
 
 int8_t EncoderConfigH265::VerifyDpbSize()
 {
-    uint32_t picWidthInCtbsY = 0, picHeightInCtbsY = 0;
-    uint32_t picSize = GetCtbAlignedPicSizeInSamples(picWidthInCtbsY, picHeightInCtbsY);
+    uint32_t widthCtbAligned = 0, heightCtbAligned = 0;
+    uint32_t picSize = GetCtbAlignedPicSizeInSamples(widthCtbAligned, heightCtbAligned);
 
     int32_t levelIdxFound = -1;
     for (size_t i = 0; i < levelLimitsTblSize; i++) {
@@ -510,7 +529,7 @@ void EncoderConfigH265::InitProfileLevel()
 bool EncoderConfigH265::InitRateControl()
 {
     // Level is already initialized by InitProfileLevel()
-    if (levelIdc >= levelLimitsTblSize) {
+    if ((size_t)levelIdc >= levelLimitsTblSize) {
         assert(!"The h.265 level index is invalid");
         return false;
     }

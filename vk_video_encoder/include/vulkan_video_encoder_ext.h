@@ -82,6 +82,13 @@ struct VkVideoEncoderConfig {
     // Quality
     uint32_t qualityLevel;      // 0 = default
 
+    // Tuning mode (VkVideoEncodeTuningModeKHR):
+    //   0 = DEFAULT, 1 = HIGH_QUALITY, 2 = LOW_LATENCY,
+    //   3 = ULTRA_LOW_LATENCY, 4 = LOSSLESS
+    // LOSSLESS engages transquant-bypass + QP0 in the codec config, producing
+    // bit-exact output (per the Vulkan spec). Requires rateControlMode DISABLED.
+    uint32_t tuningMode;
+
     // Color info (VUI)
     uint8_t colourPrimaries;
     uint8_t transferCharacteristics;
@@ -103,6 +110,12 @@ struct VkVideoEncoderConfig {
     // Debug
     VkBool32 verbose;
     VkBool32 validate;          // Vulkan validation layers
+
+    // External VkInstance (optional)
+    // When non-null, the encoder creates its VkDevice on this instance
+    // instead of creating its own. Required for cross-process import
+    // on Windows where opaque Win32 handles are scoped per-instance.
+    VkInstance externalInstance;
 };
 
 //=============================================================================
@@ -131,8 +144,18 @@ struct VkVideoEncodeInputFrame {
     VkBool32 forceIDR;
     VkBool32 forceIntra;
 
+    // Set to VK_TRUE for the last frame to properly close the GOP
+    // and write end-of-stream markers. Without this, decoders may
+    // not be able to decode the trailing frames.
+    VkBool32 isLastFrame = VK_FALSE;
+
     // Per-frame QP override (-1 = use session default)
     int32_t qpOverride;
+
+    // Unique image index for query pool slot mapping and in-flight tracking.
+    // Same concept as the internal image pool index and debug tracking.
+    // Set to -1 to use the internal image pool index (legacy default).
+    int32_t uniqueImageIndex = -1;
 
     // Synchronization: wait semaphores
     // The encoder will wait on these before accessing the image.

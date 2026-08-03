@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include <atomic>
 #include "vulkan_video_encoder.h"
 
 #include "VkVideoEncoder/VkEncoderConfig.h"
@@ -29,11 +28,15 @@ public:
         return m_encoderConfig->numFrames;
     }
     virtual VkResult EncodeNextFrame(int64_t& frameNumEncoded);
-    virtual VkResult GetBitstream() { return VK_SUCCESS; }
+    virtual VkResult GetBitstream() {
+        if (m_encoder) {
+            m_encoder->WaitForThreadsToComplete();
+        }
+        return VK_SUCCESS;
+    }
 
     VulkanVideoEncoderImpl()
-    : m_refCount(0)
-    , m_vkDevCtxt()
+    : m_vkDevCtxt()
     , m_encoderConfig()
     , m_encoder()
     , m_lastFrameIndex(0)
@@ -55,25 +58,7 @@ public:
         m_encoderConfig = nullptr;
     }
 
-    int32_t AddRef()
-    {
-        return ++m_refCount;
-    }
-
-    int32_t Release()
-    {
-        uint32_t ret;
-        ret = --m_refCount;
-        // Destroy the device if refcount reaches zero
-        if (ret == 0) {
-            Deinitialize();
-            delete this;
-        }
-        return ret;
-    }
-
 private:
-    std::atomic<int32_t>             m_refCount;
     VulkanDeviceContext              m_vkDevCtxt;
     VkSharedBaseObj<EncoderConfig>   m_encoderConfig;
     VkSharedBaseObj<VkVideoEncoder>  m_encoder;

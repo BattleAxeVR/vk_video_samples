@@ -20,7 +20,7 @@
 #include <assert.h>
 #include <string.h>
 #include <string>
-#include <charconv>
+#include <cstdlib>
 #include <cerrno>
 #include <atomic>
 #include <limits>
@@ -36,6 +36,8 @@
 #include "VkVideoCore/VkVideoCoreProfile.h"
 #include "VkVideoCore/VulkanVideoCapabilities.h"
 #include "VkCodecUtils/VulkanFilterYuvCompute.h"
+
+#undef max
 
 struct EncoderConfigH264;
 struct EncoderConfigH265;
@@ -505,10 +507,9 @@ private:
       if (*str == '\0') {
         return false;
       }
-      const char* last = str + strlen(str);
-      uint32_t value = 0;
-      auto [ptr, ec] = std::from_chars(str, last, value);
-      if (ec != std::errc{} || value == 0) {
+      char* end = nullptr;
+      unsigned long value = strtoul(str, &end, 10);
+      if (end == str || value == 0) {
         return false;
       }
       *out_value_ptr = value;
@@ -746,9 +747,6 @@ struct EncoderConfig : public VkVideoRefCountBase {
     enum { ZERO_GOP_IDR_PERIOD  = 0 };
     enum { CONSECUTIVE_B_FRAME_COUNT_MAX_VALUE = UINT8_MAX};
 
-private:
-    std::atomic<int32_t> refCount;
-
 public:
     std::string appName;
     vk::DeviceUuidUtils deviceUUID;
@@ -860,6 +858,7 @@ public:
     uint32_t enableFramePresent : 1;
     uint32_t enableFrameDirectModePresent : 1;
     uint32_t enableHwLoadBalancing : 1;
+    uint32_t noDeviceFallback : 1;
     uint32_t selectVideoWithComputeQueue : 1;
     uint32_t enablePreprocessComputeFilter : 1;
     uint32_t repeatInputFrames : 1;
@@ -869,14 +868,20 @@ public:
     // 2: replicate only one row and one column to the padding area;
     uint32_t enablePictureRowColReplication : 2;
     uint32_t enableOutOfOrderRecording : 1; // Testing only - don't use for production!
+    uint32_t enablePsnrMetrics : 1;
+    std::vector<uint32_t> crcInitValue;  // initialize crc values
     uint32_t disableEncodeParameterOptimizations : 1;
+    uint32_t asyncAssembly : 1;
+    uint32_t assemblyThreadCount;
+    uint32_t outputCrcPerFrame : 1;
+    std::string crcOutputFileName;
 
+    bool IsPsnrMetricsEnabled() const { return enablePsnrMetrics != 0; }
     int32_t  drmFormatModifierIndex; // -1 = disabled (OPTIMAL), >= 0 = index into non-linear modifier list
     uint64_t selectedDrmFormatModifier; // resolved modifier value (set during InitEncoder)
 
     EncoderConfig()
-    : refCount(0)
-    , appName()
+    : appName()
     , deviceId(-1)
     , queueId(0)
     , codec(VK_VIDEO_CODEC_OPERATION_NONE_KHR)
@@ -970,32 +975,23 @@ public:
     , enableFramePresent(false)
     , enableFrameDirectModePresent(false)
     , enableHwLoadBalancing(false)
+    , noDeviceFallback(false)
     , selectVideoWithComputeQueue(false)
     , enablePreprocessComputeFilter(true)
     , repeatInputFrames(false)
     , enablePictureRowColReplication(1)
     , enableOutOfOrderRecording(false)
+    , enablePsnrMetrics(false)
     , disableEncodeParameterOptimizations(false)
+    , asyncAssembly(true)
+    , assemblyThreadCount(2)
+    , outputCrcPerFrame(false)
+    , crcOutputFileName()
     , drmFormatModifierIndex(-1)
     , selectedDrmFormatModifier(0)
     { }
 
     virtual ~EncoderConfig() {}
-
-    virtual int32_t AddRef()
-    {
-        return ++refCount;
-    }
-
-    virtual int32_t Release()
-    {
-        uint32_t ret = --refCount;
-        // Destroy the device if ref-count reaches zero
-        if (ret == 0) {
-            delete this;
-        }
-        return ret;
-    }
 
     virtual EncoderConfigH264* GetEncoderConfigh264() {
         return nullptr;
@@ -1022,12 +1018,11 @@ public:
 
     virtual int DoParseArguments(int argc, const char *argv[]) {
         if (argc > 0) {
-            std::cout << "Invalid paramters: ";
+            std::cout << "Invalid parameters: ";
             for (int i = 0; i < argc; i++) {
                 std::cout << argv[i] << " ";
             }
             std::cout << std::endl;
-            return -1;
         }
         return 0;
     };

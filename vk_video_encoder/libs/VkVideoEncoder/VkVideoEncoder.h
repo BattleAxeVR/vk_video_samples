@@ -44,6 +44,8 @@
 #ifdef NV_AQ_GPU_LIB_SUPPORTED
 #include "EncodeAqAnalyzes.h"
 #endif // NV_AQ_GPU_LIB_SUPPORTED
+#include "VkVideoEncoder/VkVideoEncoderPsnr.h"
+#include "VkCodecUtils/VkVideoCrc.h"
 
 class VkVideoEncoderH264;
 class VkVideoEncoderH265;
@@ -57,6 +59,14 @@ public:
 
     enum { MAX_IMAGE_REF_RESOURCES = 17 }; /* List of reference pictures 16 + 1 for current */
     enum { MAX_BITSTREAM_HEADER_BUFFER_SIZE = 256 };
+
+    struct BitstreamReadback {
+        uint32_t bitstreamStartOffset{0};
+        uint32_t bitstreamSize{0};
+        VkQueryResultStatusKHR status{VK_QUERY_RESULT_STATUS_NOT_READY_KHR};
+        std::vector<uint8_t> bitstreamCopy;
+        bool readbackDone{false};
+    };
 
     // ============================================================================
     // Timeline Semaphore Synchronization Helpers
@@ -171,8 +181,7 @@ public:
             , srcQpMapStagingResource()
             , srcQpMapImageResource()
             , qpMapCmdBuffer()
-            , m_refCount(0)
-            , m_parent()
+            , m_parent(nullptr)
             , m_parentIndex(-1)
             , m_codec(codec)
         {
@@ -235,6 +244,8 @@ public:
         VkSharedBaseObj<VulkanVideoImagePoolNode>          srcQpMapStagingResource;
         VkSharedBaseObj<VulkanVideoImagePoolNode>          srcQpMapImageResource;
         VkSharedBaseObj<VulkanCommandBufferPool::PoolNode> qpMapCmdBuffer;
+        /** Per-frame PSNR capture/recon data (only used when PSNR is enabled). */
+        VkVideoEncoderPsnr::FrameData                      psnrFrameData;
 #ifdef NV_AQ_GPU_LIB_SUPPORTED
         std::shared_ptr<AqProcessor>                       aqProcessorSlot;
 #endif // NV_AQ_GPU_LIB_SUPPORTED
@@ -301,6 +312,26 @@ public:
 
             // After processing the next frame, reset the current frame
             dependantFrames = nullptr;
+        }
+
+        // Releases a deferred-frame chain when the frames are NOT handed to
+        // the async-assembly queue.  Pool-recycled frame nodes do not run
+        // destructors when their last reference drops, so each frame's
+        // resources (DPB setup image, input image, bitstream buffer, command
+        // buffers) must be dropped explicitly via Reset() - mirroring
+        // ReleaseAssemblyItem on the async path.  ReleaseChildrenFrames alone
+        // leaves those resources pinned inside the pooled nodes and starves
+        // the image/buffer pools (--syncAssembly: DPB image pool exhausted
+        // after ~16 frames, truncating the output).
+        static void ResetAndReleaseFrames(VkSharedBaseObj<VkVideoEncodeFrameInfo>& frames) {
+            VkSharedBaseObj<VkVideoEncodeFrameInfo> frame = frames;
+            frames = nullptr;
+            while (frame != nullptr) {
+                VkSharedBaseObj<VkVideoEncodeFrameInfo> next = frame->dependantFrames;
+                frame->dependantFrames = nullptr;
+                frame->Reset(true);
+                frame = next;
+            }
         }
 
         template <typename Callback>
@@ -390,6 +421,11 @@ public:
             lastFrame = false;
             controlCmd = VkVideoCodingControlFlagsKHR();
             pControlCmdChain = nullptr;
+            // Pool nodes are recycled into non-external roles (e.g. AV1
+            // show-existing pseudo-frames); stale external-input state would
+            // make them inject stale release-semaphore signals and defeat
+            // the flush-point (last-external-frame) detection.
+            ClearExternalInputSync();
             assert(qualityLevelInfo.sType == VK_STRUCTURE_TYPE_VIDEO_ENCODE_QUALITY_LEVEL_INFO_KHR);
             assert(rateControlInfo.sType == VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_INFO_KHR);
             assert(rateControlLayersInfo[0].sType == VK_STRUCTURE_TYPE_VIDEO_ENCODE_RATE_CONTROL_LAYER_INFO_KHR);
@@ -429,48 +465,32 @@ public:
         virtual ~VkVideoEncodeFrameInfo() {
         }
 
-        virtual int32_t AddRef()
-        {
-            return ++m_refCount;
-        }
-
-        virtual int32_t Release()
-        {
-            uint32_t ret = --m_refCount;
-            if (ret == 1) {
-                m_parent->ReleasePoolNodeToPool(m_parentIndex);
-                m_parentIndex = -1;
-                m_parent = nullptr;
-                Reset();
-            } else if (ret == 0) {
-                // Destroy the resources if ref-count reaches zero
-            }
-            return ret;
-        }
-
         void Init() {
-            AddRef();
             Reset();
         }
 
         void Deinit() {
             Reset();
-            Release();
         }
 
-        VkResult SetParent(VulkanBufferPoolIf* buffPool, int32_t parentIndex)
+        VkResult SetParent(VkSharedBaseObj<VulkanBufferPoolIf> buffPool, int32_t parentIndex)
         {
             assert(m_parent == nullptr);
-            m_parent      = buffPool;
+            m_parent      = std::move(buffPool);
             assert(m_parentIndex == -1);
             m_parentIndex = parentIndex;
 
             return VK_SUCCESS;
         }
 
+        void ClearParent()
+        {
+            m_parentIndex = -1;
+            m_parent = nullptr;
+        }
+
     private:
-        std::atomic<int32_t>                m_refCount;
-        VkSharedBaseObj<VulkanBufferPoolIf> m_parent;
+        VkSharedBaseObj<VulkanBufferPoolIf>  m_parent;
         int32_t                             m_parentIndex;
         VkVideoCodecOperationFlagBitsKHR    m_codec;
     };
@@ -541,8 +561,7 @@ public:
 #endif // VIDEO_DISPLAY_QUEUE_SUPPORT
 public:
     VkVideoEncoder(const VulkanDeviceContext* vkDevCtx)
-        : refCount(0)
-        , m_encoderConfig()
+        : m_encoderConfig()
         , m_vkDevCtx(vkDevCtx)
         , m_inputFrameNum(0)
         , m_encodeInputFrameNum(0)
@@ -578,6 +597,8 @@ public:
         , m_numDeferredFrames()
         , m_numDeferredRefFrames()
         , m_holdRefFramesInQueue(1)
+        , m_maxSubmittedInputReleaseId(0)
+        , m_lastSignaledInputReleaseId(0)
         , m_controlCmd(VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR |
                        VK_VIDEO_CODING_CONTROL_ENCODE_QUALITY_LEVEL_BIT_KHR |
                        VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR)
@@ -597,27 +618,13 @@ public:
         , m_qpMapTiling()
         , m_linearQpMapImagePool()
         , m_qpMapImagePool()
+        , m_psnr()
     { }
 
     // Factory Function
     static VkResult CreateVideoEncoder(const VulkanDeviceContext* vkDevCtx,
                                        VkSharedBaseObj<EncoderConfig>& encoderConfig,
                                        VkSharedBaseObj<VkVideoEncoder>& encoder);
-
-    virtual int32_t AddRef()
-    {
-        return ++refCount;
-    }
-
-    virtual int32_t Release()
-    {
-        uint32_t ret = --refCount;
-        // Destroy the device if ref-count reaches zero
-        if (ret == 0) {
-            delete this;
-        }
-        return ret;
-    }
 
     virtual VkVideoEncoderH264* GetVideoEncoderH264() {
         return nullptr;
@@ -720,6 +727,33 @@ public:
     virtual VkResult AssembleBitstreamData(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
                                            uint32_t frameIdx, uint32_t ofTotalFrames);
 
+    
+    size_t WriteDataToFile(const uint8_t* data, size_t size);
+    virtual VkResult ReadbackBitstreamData(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
+                                           BitstreamReadback& readback);
+
+    virtual VkResult WriteBitstreamToFile(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
+                                          uint32_t frameIdx, uint32_t ofTotalFrames,
+                                          BitstreamReadback& readback);
+
+    /**
+     * @brief Get the CRC values for the encoded data
+     *
+     * @param pCrcValues Pointer to store the CRC values
+     * @param buffSize Size of the buffer to store the CRC values
+     * @return size_t Number of CRC values written, (size_t)-1 on error
+     */
+    virtual size_t GetCrcValues(uint32_t* pCrcValues, size_t buffSize) const;
+
+    /**
+     * @brief Get the average PSNR (dB) for the encoded stream (input vs reconstructed frames).
+     * @return Average PSNR in dB, or -1.0 if PSNR was not enabled or no frames were measured.
+     */
+    virtual double GetAveragePsnr() const;
+    /** Average chroma PSNR (dB), or -1.0 if not applicable / disabled. */
+    virtual double GetAveragePsnrU() const;
+    virtual double GetAveragePsnrV() const;
+
     virtual VkResult StartOfVideoCodingEncodeOrder(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo, uint32_t frameIdx, uint32_t ofTotalFrames)
     {
         encodeFrameInfo->frameEncodeEncodeOrderNum = m_encodeEncodeFrameNum++;
@@ -793,8 +827,15 @@ protected:
     virtual VkResult ProcessDpb(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo,
                                 uint32_t frameIdx, uint32_t ofTotalFrames) = 0;
 
+public:
     virtual ~VkVideoEncoder() {
         DeinitEncoder();
+        for (auto& t : m_assemblyThreads) {
+            if (t.joinable()) t.join();
+        }
+        if (m_encoderQueueConsumerThread.joinable()) {
+            m_encoderQueueConsumerThread.join();
+        }
     }
 
     int32_t DeinitEncoder();
@@ -869,9 +910,18 @@ protected:
                                      VkFormat format, VkImageUsageFlags usage,
                                      const VkExtent2D& imageExtent);
 
+    struct AssemblyWorkItem {
+        VkSharedBaseObj<VkVideoEncodeFrameInfo> frameInfo;
+        uint64_t sequenceNumber;
+        BitstreamReadback readback;
+    };
     typedef VkThreadSafeQueue<VkSharedBaseObj<VkVideoEncodeFrameInfo>> EncoderFrameQueue;
-private:
-    std::atomic<int32_t> refCount;
+    typedef VkThreadSafeQueue<AssemblyWorkItem> AssemblyQueue;
+
+    void AssemblyWorkerThread(int threadId);
+    VkResult QueueFramesForAssembly(VkSharedBaseObj<VkVideoEncodeFrameInfo>& frames, uint32_t numFrames);
+    void ReleaseAssemblyItem(AssemblyWorkItem& item);
+
 protected:
     VkSharedBaseObj<EncoderConfig>                m_encoderConfig;
     const VulkanDeviceContext*                    m_vkDevCtx;
@@ -911,6 +961,19 @@ protected:
     uint32_t                                 m_numDeferredFrames;
     uint32_t                                 m_numDeferredRefFrames;
     uint32_t                                 m_holdRefFramesInQueue;
+    // External-input release signaling at queue flush points (Path A).
+    // Encode submits arrive in encode order, which under B-frame GOPs
+    // differs from input order, so a frame's own release value must not be
+    // signaled on its submit (a reordered reference would release the B
+    // inputs it precedes while their encodes still have to read them).
+    // The end of each ordered batch (reference frame + its deferred
+    // B-frames) is a natural flush point: every input received so far has
+    // been encode-submitted, so the batch's last submit signals the max
+    // release value seen — one monotonic signal releasing the whole
+    // sequence, valid for any intra-batch order. Single-frame batches
+    // (no B-frames) degenerate to per-frame signaling.
+    uint64_t                                 m_maxSubmittedInputReleaseId;
+    uint64_t                                 m_lastSignaledInputReleaseId;
     VkVideoCodingControlFlagsKHR             m_controlCmd;
     VkSharedBaseObj<VulkanVideoImagePool>    m_linearInputImagePool;
     VkSharedBaseObj<VulkanVideoImagePool>    m_inputImagePool;
@@ -936,9 +999,22 @@ protected:
     VkImageTiling                            m_qpMapTiling;
     VkSharedBaseObj<VulkanVideoImagePool>    m_linearQpMapImagePool;
     VkSharedBaseObj<VulkanVideoImagePool>    m_qpMapImagePool;
+    VkSharedBaseObj<VkVideoEncoderPsnr>       m_psnr;
+
+    VkVideoCrc                               m_crc;
+
 #ifdef NV_AQ_GPU_LIB_SUPPORTED
     std::shared_ptr<nvenc_aq::EncodeAqAnalyzes > m_aqAnalyzes;
 #endif // NV_AQ_GPU_LIB_SUPPORTED
+
+    bool                                     m_asyncAssemblyEnabled{false};
+    AssemblyQueue                            m_assemblyQueue;
+    std::vector<std::thread>                 m_assemblyThreads;
+    std::atomic<uint64_t>                    m_assemblySequenceCounter{0};
+    std::atomic<uint64_t>                    m_nextWriteSequence{0};
+    std::mutex                               m_assemblyFileMutex;
+    std::condition_variable                  m_assemblyOrderCV;
+    std::atomic<uint32_t>                    m_assemblyErrorCount{0};
 };
 
 VkResult CreateVideoEncoderH264(const VulkanDeviceContext* vkDevCtx,

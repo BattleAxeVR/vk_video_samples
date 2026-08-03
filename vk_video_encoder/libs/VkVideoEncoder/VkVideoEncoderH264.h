@@ -130,8 +130,11 @@ public:
     }
 
 protected:
+public:
     virtual ~VkVideoEncoderH264()
     {
+        // Must join worker threads before destroying H.264-specific members.
+        WaitForThreadsToComplete();
 
         m_frameInfoBuffersQueue = nullptr;
         m_videoSessionParameters = nullptr;
@@ -151,7 +154,7 @@ private:
 
     VkVideoEncodeFrameInfoH264* GetEncodeFrameInfoH264(VkSharedBaseObj<VkVideoEncodeFrameInfo>& encodeFrameInfo) {
         assert(VK_VIDEO_CODEC_OPERATION_ENCODE_H264_BIT_KHR == encodeFrameInfo->GetType());
-        VkVideoEncodeFrameInfo* pEncodeFrameInfo = encodeFrameInfo;
+        VkVideoEncodeFrameInfo* pEncodeFrameInfo = encodeFrameInfo.get();
         return (VkVideoEncodeFrameInfoH264*)pEncodeFrameInfo;
     }
 

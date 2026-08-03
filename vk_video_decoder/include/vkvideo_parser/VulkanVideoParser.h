@@ -65,6 +65,7 @@ public:
         uint32_t bufferSizeAlignment,
         uint64_t clockRate,
         uint32_t errorThreshold,
+        bool inlineSessionParameters,
         VkSharedBaseObj<IVulkanVideoParser>& vulkanVideoParser);
 
     // doPartialParsing 0: parse entire packet, 1: parse until next decode/display event
@@ -72,7 +73,13 @@ public:
                                     size_t* pParsedBytes,
                                     bool doPartialParsing = false) = 0;
 
+    virtual void Deinitialize() = 0;
+
 protected:
+public:
+    // Do NOT call Deinitialize() here — it's pure virtual and the derived
+    // class is already destroyed by the time the base destructor runs.
+    // Each derived class destructor must call its own Deinitialize().
     virtual ~IVulkanVideoParser() { }
 };
 
@@ -91,6 +98,7 @@ VkResult vulkanCreateVideoParser(
     uint32_t bufferOffsetAlignment,
     uint32_t bufferSizeAlignment,
     uint64_t clockRate,
+    bool inlineSessionParameters,
     VkSharedBaseObj<IVulkanVideoParser>& vulkanVideoParser);
 
 #endif /* _VULKANVIDEOPARSER_H_ */

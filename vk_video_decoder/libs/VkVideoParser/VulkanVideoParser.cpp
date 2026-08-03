@@ -118,7 +118,7 @@ struct nvVideoH264PicParameters {
 
     StdVideoDecodeH264PictureInfo stdPictureInfo;
     VkVideoDecodeH264PictureInfoKHR pictureInfo;
-    VkVideoDecodeH264SessionParametersAddInfoKHR pictureParameters;
+    VkVideoDecodeH264InlineSessionParametersInfoKHR inlineSessionParameters {};
     nvVideoDecodeH264DpbSlotInfo currentDpbSlotInfo;
     nvVideoDecodeH264DpbSlotInfo dpbRefList[MAX_REF_PICTURES_LIST_ENTRIES];
 };
@@ -132,7 +132,7 @@ struct nvVideoH265PicParameters {
 
     StdVideoDecodeH265PictureInfo stdPictureInfo;
     VkVideoDecodeH265PictureInfoKHR pictureInfo;
-    VkVideoDecodeH265SessionParametersAddInfoKHR pictureParameters;
+    VkVideoDecodeH265InlineSessionParametersInfoKHR inlineSessionParameters {};
     nvVideoDecodeH265DpbSlotInfo currentDpbSlotInfo;
     nvVideoDecodeH265DpbSlotInfo dpbRefList[MAX_REF_PICTURES_LIST_ENTRIES];
 };
@@ -173,7 +173,7 @@ struct nvVideoAV1PicParameters {
     uint16_t height_in_sbs_minus_1[64];
     StdVideoDecodeAV1PictureInfo stdPictureInfo; // memory for the pointer in pictureInfo
     VkVideoDecodeAV1PictureInfoKHR pictureInfo;
-    VkVideoDecodeAV1SessionParametersCreateInfoKHR pictureParameters;
+    VkVideoDecodeAV1InlineSessionParametersInfoKHR inlineSessionParameters {};
     nvVideoDecodeAV1DpbSlotInfo currentDpbSlotInfo;
     nvVideoDecodeAV1DpbSlotInfo dpbRefList[nvVideoDecodeAV1DpbSlotInfo::TOTAL_REFS_PER_FRAME + 1];
 };
@@ -613,9 +613,6 @@ public:
 
     } dpbH264Entry;
 
-    virtual int32_t AddRef();
-    virtual int32_t Release();
-
     // INvVideoDecoderClient
     virtual VkResult ParseVideoData(VkParserSourceDataPacket* pPacket,
                                     size_t* pParsedBytes,
@@ -653,12 +650,12 @@ public:
 
     const IVulkanVideoDecoderHandler* GetDecoderHandler()
     {
-        return m_decoderHandler;
+        return m_decoderHandler.get();
     }
 
     IVulkanVideoFrameBufferParserCb* GetFrameBufferParserCb()
     {
-        return m_videoFrameBufferCb;
+        return m_videoFrameBufferCb.get();
     }
 
     uint32_t GetNumNumDecodeSurfaces() { return m_maxNumDecodeSurfaces; }
@@ -671,13 +668,14 @@ protected:
         uint32_t defaultMinBufferSize,
         uint32_t bufferOffsetAlignment,
         uint32_t bufferSizeAlignment,
-        bool outOfBandPictureParameters,
+        bool inlineSessionParameters,
         uint32_t errorThreshold);
 
     VulkanVideoParser(VkVideoCodecOperationFlagBitsKHR codecType,
         uint32_t maxNumDecodeSurfaces, uint32_t maxNumDpbSurfaces,
         uint64_t clockRate);
 
+    public:
     virtual ~VulkanVideoParser() { Deinitialize(); }
 
     bool UpdatePictureParameters(VkSharedBaseObj<StdVideoPictureParametersSet>& pictureParametersObject,
@@ -745,18 +743,16 @@ protected:
     VkSharedBaseObj<VulkanVideoDecodeParser>    m_vkParser;
     VkSharedBaseObj<IVulkanVideoDecoderHandler> m_decoderHandler;
     VkSharedBaseObj<IVulkanVideoFrameBufferParserCb> m_videoFrameBufferCb;
-    std::atomic<int32_t> m_refCount;
     VkVideoCodecOperationFlagBitsKHR m_codecType;
     uint32_t m_maxNumDecodeSurfaces;
     uint32_t m_maxNumDpbSlots;
     uint64_t m_clockRate;
+    bool m_inlineSessionParameters;
     VkParserSequenceInfo m_nvsi;
     int32_t m_nCurrentPictureID;
     uint32_t m_dpbSlotsMask;
     uint32_t m_fieldPicFlagMask;
     DpbSlots m_dpb;
-    uint32_t m_outOfBandPictureParameters : 1;
-    uint32_t m_inlinedPictureParametersUseBeginCoding : 1;
     int8_t m_pictureToDpbSlotMap[MAX_FRM_CNT];
 
 public:
@@ -909,19 +905,6 @@ VkDeviceSize VulkanVideoParser::GetBitstreamBuffer(VkDeviceSize size,
                                                 bitstreamBuffer);
 }
 
-int32_t VulkanVideoParser::AddRef() { return ++m_refCount; }
-
-int32_t VulkanVideoParser::Release()
-{
-    uint32_t ret;
-    ret = --m_refCount;
-    // Destroy the device if refcount reaches zero
-    if (ret == 0) {
-        delete this;
-    }
-    return ret;
-}
-
 VulkanVideoParser::VulkanVideoParser(VkVideoCodecOperationFlagBitsKHR codecType,
     uint32_t maxNumDecodeSurfaces,
     uint32_t maxNumDpbSurfaces,
@@ -929,17 +912,15 @@ VulkanVideoParser::VulkanVideoParser(VkVideoCodecOperationFlagBitsKHR codecType,
     : m_vkParser()
     , m_decoderHandler()
     , m_videoFrameBufferCb()
-    , m_refCount(0)
     , m_codecType(codecType)
     , m_maxNumDecodeSurfaces(maxNumDecodeSurfaces)
     , m_maxNumDpbSlots(maxNumDpbSurfaces)
     , m_clockRate(clockRate)
+    , m_inlineSessionParameters(false)
     , m_nCurrentPictureID(0)
     , m_dpbSlotsMask(0)
     , m_fieldPicFlagMask(0)
     , m_dpb(3)
-    , m_outOfBandPictureParameters(true)
-    , m_inlinedPictureParametersUseBeginCoding(false)
 {
     memset(&m_nvsi, 0, sizeof(m_nvsi));
     for (uint32_t picId = 0; picId < MAX_FRM_CNT; picId++) {
@@ -961,12 +942,12 @@ VkResult VulkanVideoParser::Initialize(
     uint32_t defaultMinBufferSize,
     uint32_t bufferOffsetAlignment,
     uint32_t bufferSizeAlignment,
-    bool outOfBandPictureParameters,
+    bool inlineSessionParameters,
     uint32_t errorThreshold)
 {
     Deinitialize();
 
-    m_outOfBandPictureParameters = outOfBandPictureParameters;
+    m_inlineSessionParameters = inlineSessionParameters;
     m_decoderHandler = decoderHandler;
     m_videoFrameBufferCb = videoFrameBufferCb;
 
@@ -984,7 +965,7 @@ VkResult VulkanVideoParser::Initialize(
 
     nvdp.referenceClockRate = m_clockRate;
     nvdp.errorThreshold = errorThreshold;
-    nvdp.outOfBandPictureParameters = outOfBandPictureParameters;
+    nvdp.inlineSessionParameters = m_inlineSessionParameters;
 
     static const VkExtensionProperties h264StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_H264_DECODE_SPEC_VERSION };
     static const VkExtensionProperties h265StdExtensionVersion = { VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_EXTENSION_NAME, VK_STD_VULKAN_VIDEO_CODEC_H265_DECODE_SPEC_VERSION };
@@ -2136,7 +2117,7 @@ bool VulkanVideoParser::UpdatePictureParameters(
         std::cout << "################################################# " << std::endl;
         std::cout << "Update Picture parameters "
                 << PictureParametersTypeToName(pictureParametersObject->GetStdType()) << ": "
-                << pictureParametersObject.Get()
+                << pictureParametersObject.get()
                 << ", count: " << (uint32_t)pictureParametersObject->GetUpdateSequenceCount()
                 << std::endl << std::flush;
         std::cout << "################################################# " << std::endl;
@@ -2190,6 +2171,7 @@ bool VulkanVideoParser::DecodePicture(
     pCurrFrameDecParams->bitstreamDataOffset = pd->bitstreamDataOffset;
     pCurrFrameDecParams->bitstreamDataLen = pd->bitstreamDataLen;
     pCurrFrameDecParams->bitstreamData = pd->bitstreamData;
+    pCurrFrameDecParams->useInlinedPictureParameters = m_inlineSessionParameters;
 
     VkVideoReferenceSlotInfoKHR
         referenceSlots[VkParserPerFrameDecodeParameters::MAX_DPB_REF_AND_SETUP_SLOTS];
@@ -2231,23 +2213,14 @@ bool VulkanVideoParser::DecodePicture(
 
         pPictureInfo->sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_PICTURE_INFO_KHR;
 
-        if (!m_outOfBandPictureParameters) {
-            // In-band h264 Picture Parameters for testing
-            h264.pictureParameters.sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_SESSION_PARAMETERS_ADD_INFO_KHR;
-            h264.pictureParameters.stdSPSCount = 1;
-            h264.pictureParameters.pStdSPSs = pin->pStdSps->GetStdH264Sps();
-            h264.pictureParameters.stdPPSCount = 1;
-            h264.pictureParameters.pStdPPSs = pin->pStdPps->GetStdH264Pps();
-            if (m_inlinedPictureParametersUseBeginCoding) {
-                pCurrFrameDecParams->beginCodingInfoPictureParametersExt = &h264.pictureParameters;
-                pPictureInfo->pNext = nullptr;
-            } else {
-                pPictureInfo->pNext = &h264.pictureParameters;
-            }
-            pCurrFrameDecParams->useInlinedPictureParameters = true;
-        } else {
-            pPictureInfo->pNext = nullptr;
-        }
+        if (m_inlineSessionParameters) {
+            h264.inlineSessionParameters.sType =
+                VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_INLINE_SESSION_PARAMETERS_INFO_KHR;
+            h264.inlineSessionParameters.pNext = nullptr;
+            h264.inlineSessionParameters.pStdSPS = pin->pStdSps->GetStdH264Sps();
+            h264.inlineSessionParameters.pStdPPS = pin->pStdPps->GetStdH264Pps();
+            pPictureInfo->pNext = &h264.inlineSessionParameters;
+        } 
 
         pCurrFrameDecParams->decodeFrameInfo.pNext = &h264.pictureInfo;
 
@@ -2354,24 +2327,14 @@ bool VulkanVideoParser::DecodePicture(
 
         pPictureInfo->sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_PICTURE_INFO_KHR;
 
-        if (!m_outOfBandPictureParameters) {
-            // In-band h265 Picture Parameters for testing
-            hevc.pictureParameters.sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_SESSION_PARAMETERS_ADD_INFO_KHR;
-            hevc.pictureParameters.stdVPSCount = 1;
-            hevc.pictureParameters.pStdVPSs = pin->pStdVps->GetStdH265Vps();
-            hevc.pictureParameters.stdSPSCount = 1;
-            hevc.pictureParameters.pStdSPSs = pin->pStdSps->GetStdH265Sps();
-            hevc.pictureParameters.stdPPSCount = 1;
-            hevc.pictureParameters.pStdPPSs = pin->pStdPps->GetStdH265Pps();
-            if (m_inlinedPictureParametersUseBeginCoding) {
-                pCurrFrameDecParams->beginCodingInfoPictureParametersExt = &hevc.pictureParameters;
-                pPictureInfo->pNext = nullptr;
-            } else {
-                pPictureInfo->pNext = &hevc.pictureParameters;
-            }
-            pCurrFrameDecParams->useInlinedPictureParameters = true;
-        } else {
-            pPictureInfo->pNext = nullptr;
+        if (m_inlineSessionParameters) {
+            hevc.inlineSessionParameters.sType =
+                VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_INLINE_SESSION_PARAMETERS_INFO_KHR;
+            hevc.inlineSessionParameters.pNext = nullptr;
+            hevc.inlineSessionParameters.pStdVPS = pin->pStdVps->GetStdH265Vps();
+            hevc.inlineSessionParameters.pStdSPS = pin->pStdSps->GetStdH265Sps();
+            hevc.inlineSessionParameters.pStdPPS = pin->pStdPps->GetStdH265Pps();
+            pPictureInfo->pNext = &hevc.inlineSessionParameters;
         }
 
         pPictureInfo->pStdPictureInfo = &hevc.stdPictureInfo;
@@ -2545,6 +2508,15 @@ bool VulkanVideoParser::DecodePicture(
         pDecodePictureInfo->viewId = 0; // @review: Doesn't seem to be used in Vulkan?
 
         pPictureInfo->sType = VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_PICTURE_INFO_KHR;
+
+        if (m_inlineSessionParameters) {
+            av1.inlineSessionParameters.sType =
+                VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_INLINE_SESSION_PARAMETERS_INFO_KHR;
+            av1.inlineSessionParameters.pNext = nullptr;
+            av1.inlineSessionParameters.pStdSequenceHeader = pin->pStdSps->GetStdAV1Sps();
+            pPictureInfo->pNext = &av1.inlineSessionParameters;
+        }
+
         pCurrFrameDecParams->decodeFrameInfo.pNext = &av1.pictureInfo;
 
         bool isKeyFrame = pin->std_info.frame_type == STD_VIDEO_AV1_FRAME_TYPE_KEY;
@@ -2699,6 +2671,7 @@ VkResult IVulkanVideoParser::Create(
     uint32_t bufferSizeAlignment,
     uint64_t clockRate,
     uint32_t errorThreshold,
+    bool inlineSessionParameters,
     VkSharedBaseObj<IVulkanVideoParser>& vulkanVideoParser)
 {
     if (!decoderHandler || !videoFrameBufferCb) {
@@ -2712,13 +2685,12 @@ VkResult IVulkanVideoParser::Create(
                                                    clockRate));
 
     if (nvVulkanVideoParser) {
-        const bool outOfBandPictureParameters = true;
         VkResult result = nvVulkanVideoParser->Initialize(decoderHandler,
                                                           videoFrameBufferCb,
                                                           defaultMinBufferSize,
                                                           bufferOffsetAlignment,
                                                           bufferSizeAlignment,
-                                                          outOfBandPictureParameters,
+                                                          inlineSessionParameters,
                                                           errorThreshold);
 
         if (result != VK_SUCCESS) {
@@ -2744,6 +2716,7 @@ VkResult vulkanCreateVideoParser(
             uint32_t bufferOffsetAlignment,
             uint32_t bufferSizeAlignment,
             uint64_t clockRate,
+            bool inlineSessionParameters,
             VkSharedBaseObj<IVulkanVideoParser>& vulkanVideoParser)
 {
     if (videoCodecOperation == VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR) {
@@ -2780,5 +2753,6 @@ VkResult vulkanCreateVideoParser(
                                       bufferSizeAlignment,
                                       clockRate,
                                       0, // errorThreshold
+                                      inlineSessionParameters,
                                       vulkanVideoParser);
 }

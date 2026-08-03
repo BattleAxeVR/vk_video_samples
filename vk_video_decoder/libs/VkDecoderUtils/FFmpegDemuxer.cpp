@@ -14,6 +14,7 @@
 * limitations under the License.
 */
 
+#include <cassert>
 #include <iostream>
 #include "VkDecoderUtils/VideoStreamDemuxer.h"
 
@@ -235,6 +236,7 @@ private:
             fmtc = CreateFormatContext(pFilePath, video_codec_id);
         }
 
+    public:
     virtual ~FFmpegDemuxer() {
 
         if (pPkt) {

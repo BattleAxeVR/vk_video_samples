@@ -22,85 +22,76 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
-#include <charconv>
+#include <cstdlib>
 #include <cmath>
 
-// Helper functions using std::from_chars (C++17) to avoid glibc strto*/sscanf
 namespace {
     template<typename T>
     inline bool parseUint(const std::string& str, T& value) {
         if (str.empty()) return false;
-        const char* first = str.data();
-        const char* last = first + str.size();
-        int base = 10;
-        if (str.size() > 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
-            first += 2;
-            base = 16;
-        } else if (str.size() > 1 && str[0] == '0') {
-            base = 8;
-        }
-        unsigned long long result = 0;
-        auto [ptr, ec] = std::from_chars(first, last, result, base);
-        if (ec == std::errc{} && ptr == last) {
-            value = static_cast<T>(result);
-            return true;
-        }
-        return false;
+        char* end = nullptr;
+        unsigned long long result = strtoull(str.c_str(), &end, 0);
+        if (end != str.c_str() + str.size()) return false;
+        value = static_cast<T>(result);
+        return true;
     }
 
     template<typename T>
     inline bool parseInt(const std::string& str, T& value) {
         if (str.empty()) return false;
-        const char* first = str.data();
-        const char* last = first + str.size();
-        long long result = 0;
-        auto [ptr, ec] = std::from_chars(first, last, result);
-        if (ec == std::errc{} && ptr == last) {
-            value = static_cast<T>(result);
-            return true;
-        }
-        return false;
+        char* end = nullptr;
+        long long result = strtoll(str.c_str(), &end, 10);
+        if (end != str.c_str() + str.size()) return false;
+        value = static_cast<T>(result);
+        return true;
     }
 
     inline bool parseFloat(const std::string& str, float& value) {
         if (str.empty()) return false;
-        const char* first = str.data();
-        const char* last = first + str.size();
-#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
-        auto [ptr, ec] = std::from_chars(first, last, value);
-        return ec == std::errc{};
-#else
-        bool negative = false;
-        if (*first == '-') { negative = true; first++; }
-        else if (*first == '+') { first++; }
-        double result = 0.0;
-        while (first < last && *first >= '0' && *first <= '9') {
-            result = result * 10.0 + (*first - '0');
-            first++;
-        }
-        if (first < last && *first == '.') {
-            first++;
-            double frac = 0.1;
-            while (first < last && *first >= '0' && *first <= '9') {
-                result += (*first - '0') * frac;
-                frac *= 0.1;
-                first++;
-            }
-        }
-        value = negative ? static_cast<float>(-result) : static_cast<float>(result);
+        char* end = nullptr;
+        double result = strtod(str.c_str(), &end);
+        if (end == str.c_str()) return false;
+        value = static_cast<float>(result);
         return true;
-#endif
     }
 
     inline bool parseHex(const std::string& str, uint32_t& value) {
         if (str.empty()) return false;
-        const char* first = str.data();
-        const char* last = first + str.size();
-        if (str.size() > 2 && str[0] == '0' && (str[1] == 'x' || str[1] == 'X')) {
-            first += 2;
+        char* end = nullptr;
+        unsigned long result = strtoul(str.c_str(), &end, 16);
+        if (end == str.c_str()) return false;
+        value = static_cast<uint32_t>(result);
+        return true;
+    }
+
+    /** Comma-separated uint32 values (decimal or 0x hex). Whitespace around commas is allowed. */
+    bool parseCommaSeparatedUint32s(const std::string& str, std::vector<uint32_t>& out)
+    {
+        out.clear();
+        std::string token;
+        for (size_t i = 0; i <= str.size(); ++i) {
+            if (i == str.size() || str[i] == ',') {
+                size_t start = 0;
+                size_t end = token.size();
+                while (start < end && std::isspace(static_cast<unsigned char>(token[start]))) {
+                    start++;
+                }
+                while (end > start && std::isspace(static_cast<unsigned char>(token[end - 1]))) {
+                    end--;
+                }
+                if (start < end) {
+                    uint32_t v = 0;
+                    if (!parseHex(token.substr(start, end - start), v)) {
+                        return false;
+                    }
+                    out.push_back(v);
+                }
+                token.clear();
+            } else {
+                token += str[i];
+            }
         }
-        auto [ptr, ec] = std::from_chars(first, last, value, 16);
-        return ec == std::errc{};
+        return !out.empty();
     }
 }
 
@@ -112,6 +103,10 @@ static void printHelp(VkVideoCodecOperationFlagBitsKHR codec)
     -i, --input                     .yuv Input YUV File Name (YUV420p 8bpp only) \n\
     -o, --output                    .264/5,ivf Output H264/5/AV1 File Name \n\
     -c, --codec                     <string> select codec type: avc (h264) or hevc (h265) or av1\n\
+    --verbose                       verbose output\n\
+    --psnr                          enable PSNR metrics (input vs reconstructed)\n\
+    --crcInit                       <list> comma-separated CRC32 seed uint32s (decimal or 0x hex), e.g. 0xFFFFFFFF,0\n\
+    --noDeviceFallback                        : don't try other GPUs if first device doesn't meet requirements \n\
     --encoderConfig                 <path>    : load base config from JSON (CLI overrides); see json_config/encoder_config.schema.json\n\
     --dpbMode                       <string>  : select DPB mode: layered, separate\n\
     --inputWidth                    <integer> : Input Width \n\
@@ -692,6 +687,19 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
         } else if (args[i] == "--enableHwLoadBalancing") {
             // Enables HW load balancing using multiple encoders devices when available
             enableHwLoadBalancing = true;
+        } else if (args[i] == "--syncAssembly") {
+            asyncAssembly = false;
+        } else if (args[i] == "--assemblyThreads") {
+            if (++i >= argc) {
+                fprintf(stderr, "Invalid parameter for %s\n", args[i - 1].c_str());
+                return -1;
+            }
+            uint32_t val = 0;
+            if (!parseUint(args[i], val) || val == 0 || val > 16) {
+                fprintf(stderr, "Invalid value for --assemblyThreads (1..16)\n");
+                return -1;
+            }
+            assemblyThreadCount = val;
         } else if (args[i] == "--testOutOfOrderRecording") {
             // Testing only - don't use this feature for production!
             fprintf(stdout, "Warning: %s should only be used for testing!\n", args[i].c_str());
@@ -782,6 +790,22 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
             }
             aqDumpDir = args[i];
 #endif // NV_AQ_GPU_LIB_SUPPORTED
+        } else if (args[i] == "--psnr") {
+            enablePsnrMetrics = 1;
+        } else if (args[i] == "--crcInit") {
+            if (++i >= argc) {
+                fprintf(stderr, "--crcInit requires a comma-separated list of uint32 values\n");
+                return -1;
+            }
+            if (!parseCommaSeparatedUint32s(args[i], crcInitValue)) {
+                fprintf(stderr, "Invalid --crcInit value (use comma-separated decimal or 0x hex uint32s): %s\n",
+                        args[i].c_str());
+                return -1;
+            }
+        } else if (args[i] == "--verbose") {
+            verbose = true;
+        } else if (args[i] == "--noDeviceFallback") {
+            noDeviceFallback = true;
         } else {
             argcount++;
             arglist.push_back(args[i].c_str());
@@ -938,14 +962,6 @@ int EncoderConfig::ParseArguments(int argc, const char *argv[])
         return -1;
     }
 
-    if (argcount > 0) {
-        fprintf(stderr, "[EncoderConfig] Unknown positional args (%d) passed to DoParseArguments:", argcount);
-        for (int a = 0; a < argcount; a++) {
-            fprintf(stderr, " '%s'", arglist[a]);
-        }
-        fprintf(stderr, "\n");
-        fflush(stderr);
-    }
     return DoParseArguments(argcount, arglist.data());
 }
 
@@ -1019,6 +1035,9 @@ VkResult EncoderConfig::CreateCodecConfig(int argc, const char *argv[],
             return result;
         }
 
+        if (getenv("VKENC_DEBUG_PSNR")) {
+            vkEncoderConfigh265->enablePsnrMetrics = 1;
+        }
         encoderConfig = vkEncoderConfigh265;
         return VK_SUCCESS;
 
@@ -1068,6 +1087,20 @@ void EncoderConfig::InitVideoProfile()
     encodeUsageInfo.videoUsageHints = encodeUsageHints;
     encodeUsageInfo.videoContentHints = encodeContentHints;
     encodeUsageInfo.tuningMode = tuningMode;
+
+    if (verbose) fprintf(stderr, "[EncoderConfig] VkVideoEncodeUsageInfoKHR:\n"
+            "  videoUsageHints   = 0x%x%s\n"
+            "  videoContentHints = 0x%x\n"
+            "  tuningMode        = %d (%s)\n",
+            encodeUsageHints,
+            (encodeUsageHints & VK_VIDEO_ENCODE_USAGE_STREAMING_BIT_KHR) ? " (STREAMING)" : "",
+            encodeContentHints,
+            tuningMode,
+            (tuningMode == VK_VIDEO_ENCODE_TUNING_MODE_DEFAULT_KHR)            ? "DEFAULT" :
+            (tuningMode == VK_VIDEO_ENCODE_TUNING_MODE_HIGH_QUALITY_KHR)       ? "HIGH_QUALITY" :
+            (tuningMode == VK_VIDEO_ENCODE_TUNING_MODE_LOW_LATENCY_KHR)        ? "LOW_LATENCY" :
+            (tuningMode == VK_VIDEO_ENCODE_TUNING_MODE_ULTRA_LOW_LATENCY_KHR)  ? "ULTRA_LOW_LATENCY" :
+            (tuningMode == VK_VIDEO_ENCODE_TUNING_MODE_LOSSLESS_KHR)           ? "LOSSLESS" : "UNKNOWN");
 
     // Create video profile with the codec-specific profile
     videoCoreProfile = VkVideoCoreProfile(codec, encodeChromaSubsampling,

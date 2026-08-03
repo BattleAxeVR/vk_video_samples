@@ -51,7 +51,7 @@ VkResult VulkanVideoSession::Create(const VulkanDeviceContext* vkDevCtx,
     createInfo.queueFamilyIndex = videoQueueFamily;
     createInfo.pictureFormat = pictureFormat;
     createInfo.maxCodedExtent = maxCodedExtent;
-    createInfo.maxDpbSlots = maxDpbSlots + 1;
+    createInfo.maxDpbSlots = maxDpbSlots;
     createInfo.maxActiveReferencePictures = maxActiveReferencePictures;
     createInfo.referencePictureFormat = referencePicturesFormat;
 
@@ -148,7 +148,7 @@ VkResult VulkanVideoSession::Create(const VulkanDeviceContext* vkDevCtx,
                                                  decodeSessionBindMemory);
     assert(result == VK_SUCCESS);
 
-    videoSession = pNewVideoSession;
+    videoSession.reset(pNewVideoSession);
 
     // Make sure we do not use dangling (on the stack) pointers
     createInfo.pNext = nullptr;

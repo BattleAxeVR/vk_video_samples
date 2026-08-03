@@ -235,10 +235,9 @@ public:
 		return m_descSets[m_currentDescriptorSetPools].GetDescriptorSet();
 	}
 
-
-	bool UsesDescriptorBuffer() const {
-		return m_resourceDescriptorBuffer;
-	}
+    bool UsesDescriptorBuffer() const {
+        return m_resourceDescriptorBuffer != nullptr;
+    }
 
 	VkDeviceOrHostAddressConstKHR UpdateDescriptorBuffer(uint32_t bufferIdx, uint32_t set,
 		uint32_t descriptorWriteCount,

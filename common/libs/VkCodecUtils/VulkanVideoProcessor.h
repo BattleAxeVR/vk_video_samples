@@ -22,6 +22,7 @@
 #include "VkVideoDecoder/VkVideoDecoder.h"
 #include "VkCodecUtils/VkVideoQueue.h"
 #include "VkVideoFrameOutput.h"
+#include "VkCodecUtils/VkVideoDumpPool.h"
 
 // Forward declarations
 class VulkanDeviceContext;
@@ -57,20 +58,8 @@ public:
 
     void Deinit();
 
-    virtual int32_t AddRef()
-    {
-        return ++m_refCount;
-    }
-
-    virtual int32_t Release()
-    {
-        uint32_t ret = --m_refCount;
-        // Destroy the device if ref-count reaches zero
-        if (ret == 0) {
-            delete this;
-        }
-        return ret;
-    }
+    /** Wait until async dump-pool writers finish (no-op if sync path). Call before GetCrcValues on frame output. */
+    void FlushAsyncFrameWrites();
 
     static void DumpVideoFormat(const VkParserDetectedVideoFormat* videoFormat, bool dumpData);
 
@@ -81,9 +70,11 @@ public:
 
     // External consumer management (forwarded to frame buffer)
     int32_t AddExternalConsumer(VkSemaphore importedReleaseSemaphore,
-                                DecodeFrameBufferIf::SemSyncTypeIdx consumerType) {
+                                uint64_t consumerType) override {
         if (m_vkVideoFrameBuffer) {
-            return m_vkVideoFrameBuffer->AddExternalConsumer(importedReleaseSemaphore, consumerType);
+            return m_vkVideoFrameBuffer->AddExternalConsumer(
+                importedReleaseSemaphore,
+                static_cast<DecodeFrameBufferIf::SemSyncTypeIdx>(consumerType));
         }
         return -1;
     }
@@ -98,8 +89,7 @@ public:
 private:
 
     VulkanVideoProcessor(const DecoderConfig& settings, const VulkanDeviceContext* vkDevCtx)
-        : m_refCount(0),
-          m_vkDevCtx(vkDevCtx),
+        : m_vkDevCtx(vkDevCtx),
           m_videoStreamDemuxer()
         , m_vkVideoFrameBuffer()
         , m_vkVideoDecoder()
@@ -117,6 +107,7 @@ private:
     {
     }
 
+public:
     virtual ~VulkanVideoProcessor() { Deinit(); }
 
     VkResult CreateParser(const char* filename,
@@ -133,13 +124,13 @@ private:
     bool StreamCompleted();
 
 private:
-    std::atomic<int32_t>       m_refCount;
     const VulkanDeviceContext* m_vkDevCtx;
     VkSharedBaseObj<VideoStreamDemuxer> m_videoStreamDemuxer;
     VkSharedBaseObj<VulkanVideoFrameBuffer> m_vkVideoFrameBuffer;
     VkSharedBaseObj<VkVideoDecoder> m_vkVideoDecoder;
     VkSharedBaseObj<IVulkanVideoParser> m_vkParser;
     VkSharedBaseObj<VkVideoFrameOutput> m_frameToFile;
+    VkVideoDumpPool m_dumpPool;
     int64_t  m_currentBitstreamOffset;
     uint32_t m_videoFrameNum;
     uint32_t m_videoStreamsCompleted : 1;

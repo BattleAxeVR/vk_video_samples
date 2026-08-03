@@ -27,7 +27,7 @@ VkImageResource::VkImageResource(const VulkanDeviceContext* vkDevCtx,
                 VkSharedBaseObj<VulkanDeviceMemoryImpl>& vulkanDeviceMemory,
                 uint64_t drmFormatModifier,
                 uint32_t memoryPlaneCount)
-   : m_refCount(0), m_imageCreateInfo(*pImageCreateInfo), m_vkDevCtx(vkDevCtx)
+   : m_imageCreateInfo(*pImageCreateInfo), m_vkDevCtx(vkDevCtx)
    , m_image(image), m_imageOffset(imageOffset), m_imageSize(imageSize)
    , m_vulkanDeviceMemory(vulkanDeviceMemory), m_layouts{}, m_memoryPlaneLayouts{}
    , m_drmFormatModifier(drmFormatModifier), m_memoryPlaneCount(memoryPlaneCount)
@@ -226,12 +226,12 @@ VkResult VkImageResource::Create(const VulkanDeviceContext* vkDevCtx,
             break;
         }
 
-        imageResource = new VkImageResource(vkDevCtx,
+        imageResource = std::shared_ptr<VkImageResource>(new VkImageResource(vkDevCtx,
                                             pImageCreateInfo,
                                             image,
                                             imageOffset,
                                             memoryRequirements.size,
-                                            vkDeviceMemory);
+                                            vkDeviceMemory));
         if (imageResource == nullptr) {
             break;
         }
@@ -469,14 +469,14 @@ VkResult VkImageResource::CreateExportable(const VulkanDeviceContext* vkDevCtx,
             break;
         }
 
-        imageResource = new VkImageResource(vkDevCtx,
+        imageResource = std::shared_ptr<VkImageResource>(new VkImageResource(vkDevCtx,
                                             &modifiedImageInfo,
                                             image,
                                             imageOffset,
                                             memoryRequirements.size,
                                             vkDeviceMemory,
                                             actualDrmModifier,
-                                            memoryPlaneCount);
+                                            memoryPlaneCount));
         if (imageResource == nullptr) {
             break;
         }
@@ -561,7 +561,7 @@ VkResult VkImageResource::CreateFromExternal(const VulkanDeviceContext* vkDevCtx
     // Mark as non-owning so Destroy() won't call vkDestroyImage
     pImageResource->m_ownsResources = false;
 
-    imageResource = pImageResource;
+    imageResource.reset(pImageResource);
     return VK_SUCCESS;
 }
 
@@ -576,7 +576,7 @@ VkResult VkImageResource::CreateFromImport(const VulkanDeviceContext* vkDevCtx,
     // when the VkImageResource ref-count drops to zero.
     VkSharedBaseObj<VulkanDeviceMemoryImpl> deviceMemory;
     if (memory != VK_NULL_HANDLE) {
-        deviceMemory = new VulkanDeviceMemoryImpl(vkDevCtx, memory, memorySize);
+        deviceMemory = std::make_shared<VulkanDeviceMemoryImpl>(vkDevCtx, memory, memorySize);
     }
 
     VkImageResource* pImageResource = new VkImageResource(
@@ -596,7 +596,7 @@ VkResult VkImageResource::CreateFromImport(const VulkanDeviceContext* vkDevCtx,
     // Owning — Destroy() will call vkDestroyImage and the memory impl will vkFreeMemory
     pImageResource->m_ownsResources = true;
 
-    imageResource = pImageResource;
+    imageResource.reset(pImageResource);
     return VK_SUCCESS;
 }
 
@@ -651,20 +651,15 @@ VkResult VkImageResourceView::Create(const VulkanDeviceContext* vkDevCtx,
     const VkImageCreateInfo& imageCreateInfo = imageResource->GetImageCreateInfo();
 
     // For multi-planar formats with planeUsageOverride, skip the combined view (index 0)
-    // as the combined format may not support the requested usage (e.g., STORAGE)
+    // as the combined format may not support the requested usage (e.g., STORAGE).
+    // Use the YCbCr overload of Create() when both combined and plane views are needed.
     bool skipCombinedView = (mpInfo != nullptr) && (planeUsageOverride != 0);
 
-    // Setup VkImageViewUsageCreateInfo - required when using EXTENDED_USAGE_BIT per Khronos issue #4624:
-    // Combined views must restrict usage to what the multi-planar format supports (exclude STORAGE)
-    // Per-plane views must restrict usage to what the plane format supports (exclude VIDEO_ENCODE_SRC)
     VkImageViewUsageCreateInfo usageCreateInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO};
     usageCreateInfo.pNext = nullptr;
     usageCreateInfo.usage = planeUsageOverride;
 
     if (!skipCombinedView) {
-        // Multi-planar combined views without YCbCr conversion: strip SAMPLED (VUID-06415)
-        // and STORAGE (not supported by multi-planar base format). Callers that need
-        // SAMPLED use the YCbCr overload of Create() instead.
         if (mpInfo) {
             VkImageUsageFlags combinedUsage = imageCreateInfo.usage;
             combinedUsage &= ~(VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
@@ -711,31 +706,24 @@ VkResult VkImageResourceView::Create(const VulkanDeviceContext* vkDevCtx,
             planeUsageCreateInfo.usage = planeUsage;
         }
         planeUsageCreateInfo.pNext = nullptr;
-        viewInfo.pNext = &planeUsageCreateInfo;
 
-        // Create separate image views for Y and CbCr planes
-        viewInfo.format = mpInfo->vkPlaneFormat[numPlanes];  // For the Y plane
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT << numPlanes;
+        // Skip per-plane views when usage is zero (video-only images like DPB)
+        if (planeUsageCreateInfo.usage != 0) {
+            viewInfo.pNext = &planeUsageCreateInfo;
 
-        VkResult result = vkDevCtx->CreateImageView(device, &viewInfo, nullptr, &imageViews[numViews]);
-        if (result != VK_SUCCESS) {
-            return result;
-        }
-        numViews++;
-        numPlanes++;
-
-        if (mpInfo->planesLayout.numberOfExtraPlanes > 0) {
-            viewInfo.format = mpInfo->vkPlaneFormat[numPlanes];  // For the CbCr plane
+            // Create separate image views for Y and CbCr planes
+            viewInfo.format = mpInfo->vkPlaneFormat[numPlanes];
             viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT << numPlanes;
-            result = vkDevCtx->CreateImageView(device, &viewInfo, nullptr, &imageViews[numViews]);
+
+            VkResult result = vkDevCtx->CreateImageView(device, &viewInfo, nullptr, &imageViews[numViews]);
             if (result != VK_SUCCESS) {
                 return result;
             }
             numViews++;
             numPlanes++;
 
-            if (mpInfo->planesLayout.numberOfExtraPlanes > 1) {
-                viewInfo.format = mpInfo->vkPlaneFormat[numPlanes];  // For the CbCr plane
+            if (mpInfo->planesLayout.numberOfExtraPlanes > 0) {
+                viewInfo.format = mpInfo->vkPlaneFormat[numPlanes];
                 viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT << numPlanes;
                 result = vkDevCtx->CreateImageView(device, &viewInfo, nullptr, &imageViews[numViews]);
                 if (result != VK_SUCCESS) {
@@ -743,9 +731,19 @@ VkResult VkImageResourceView::Create(const VulkanDeviceContext* vkDevCtx,
                 }
                 numViews++;
                 numPlanes++;
+
+                if (mpInfo->planesLayout.numberOfExtraPlanes > 1) {
+                    viewInfo.format = mpInfo->vkPlaneFormat[numPlanes];
+                    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT << numPlanes;
+                    result = vkDevCtx->CreateImageView(device, &viewInfo, nullptr, &imageViews[numViews]);
+                    if (result != VK_SUCCESS) {
+                        return result;
+                    }
+                    numViews++;
+                    numPlanes++;
+                }
             }
         }
-
         // Reset pNext after plane views are created
         viewInfo.pNext = nullptr;
     } else {
@@ -806,9 +804,9 @@ VkResult VkImageResourceView::Create(const VulkanDeviceContext* vkDevCtx,
         }
     }
 
-    imageResourceView = new VkImageResourceView(vkDevCtx, imageResource,
+    imageResourceView = std::shared_ptr<VkImageResourceView>(new VkImageResourceView(vkDevCtx, imageResource,
                                                 numViews, numPlanes,
-                                                imageViews, imageSubresourceRange);
+                                                imageViews, imageSubresourceRange));
 
     return VK_SUCCESS;
 }
@@ -935,9 +933,9 @@ VkResult VkImageResourceView::Create(const VulkanDeviceContext* vkDevCtx,
         }
     }
 
-    imageResourceView = new VkImageResourceView(vkDevCtx, imageResource,
+    imageResourceView = std::shared_ptr<VkImageResourceView>(new VkImageResourceView(vkDevCtx, imageResource,
                                                 numViews, numPlanes,
-                                                imageViews, imageSubresourceRange);
+                                                imageViews, imageSubresourceRange));
 
     return VK_SUCCESS;
 }

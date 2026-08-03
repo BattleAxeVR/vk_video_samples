@@ -519,7 +519,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugReportCallback(VkDebugReportFlagsEXT 
 // VK_EXT_debug_utils callback -- preferred over VK_EXT_debug_report.
 // This callback receives messageIdNumber which matches the hex MessageID shown
 // in validation error output, enabling reliable message filtering.
-VkBool32 VulkanDeviceContext::DebugUtilsMessengerCallback(
+VKAPI_ATTR VkBool32 VKAPI_CALL VulkanDeviceContext::DebugUtilsMessengerCallback(
     VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
     VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -607,13 +607,10 @@ VkResult VulkanDeviceContext::InitPhysicalDevice(int32_t deviceId, const vk::Dev
                                                  const VkVideoCodecOperationFlagsKHR requestVideoEncodeQueueOperations,
                                                  VkPhysicalDevice vkPhysicalDevice)
 {
-    fprintf(stderr, "[VulkanDeviceContext] InitPhysicalDevice: enumerating...\n"); fflush(stderr);
     std::vector<VkPhysicalDevice> availablePhysicalDevices;
     if (vkPhysicalDevice == VK_NULL_HANDLE) {
         // enumerate physical devices
         VkResult result = vk::enumerate(this, m_instance, availablePhysicalDevices);
-        fprintf(stderr, "[VulkanDeviceContext] enumerate returned %d, found %zu devices\n",
-                (int)result, availablePhysicalDevices.size()); fflush(stderr);
         if (result != VK_SUCCESS) {
             return result;
         }
@@ -624,7 +621,6 @@ VkResult VulkanDeviceContext::InitPhysicalDevice(int32_t deviceId, const vk::Dev
     m_physDevice = VK_NULL_HANDLE;
     for (auto physicalDevice : availablePhysicalDevices) {
 
-        fprintf(stderr, "[VulkanDeviceContext] Checking physical device %p\n", (void*)physicalDevice); fflush(stderr);
 
         // Get Vulkan 1.1 specific properties which include deviceUUID
         VkPhysicalDeviceVulkan11Properties deviceVulkan11Properties = {};
@@ -635,10 +631,7 @@ VkResult VulkanDeviceContext::InitPhysicalDevice(int32_t deviceId, const vk::Dev
         devProp2.pNext = &deviceVulkan11Properties;
 
         // Get the properties
-        fprintf(stderr, "[VulkanDeviceContext] GetPhysicalDeviceProperties2...\n"); fflush(stderr);
         GetPhysicalDeviceProperties2(physicalDevice, &devProp2);
-        fprintf(stderr, "[VulkanDeviceContext] Device: %s (vendor=0x%x)\n",
-                devProp2.properties.deviceName, devProp2.properties.vendorID); fflush(stderr);
 
         if ((deviceId != -1) && (devProp2.properties.deviceID != (uint32_t)deviceId)) {
             continue;
@@ -985,10 +978,16 @@ VkResult VulkanDeviceContext::CreateVulkanDevice(int32_t numDecodeQueues,
         assert(timelineSemaphoreFeatures.timelineSemaphore);
         assert(videoMaintenance1Features.videoMaintenance1);
         assert(synchronization2Features.synchronization2);
-        assert(((videoCodecs & VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR) != 0) ==
-                (videoEncodeAV1Feature.videoEncodeAV1 != VK_FALSE));
-        assert(((videoCodecs & VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR) != 0) ==
-                (videoDecodeVP9Feature.videoDecodeVP9 != VK_FALSE));
+        if ((videoCodecs & VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR) &&
+            !videoEncodeAV1Feature.videoEncodeAV1) {
+            std::cerr << "ERROR: AV1 encode requested but videoEncodeAV1 feature not supported" << std::endl;
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
+        if ((videoCodecs & VK_VIDEO_CODEC_OPERATION_DECODE_VP9_BIT_KHR) &&
+            !videoDecodeVP9Feature.videoDecodeVP9) {
+            std::cerr << "ERROR: VP9 decode requested but videoDecodeVP9 feature not supported" << std::endl;
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
 
         devInfo.pNext = &deviceFeatures;
 
@@ -1138,6 +1137,7 @@ VulkanDeviceContext::~VulkanDeviceContext() {
 
     if (m_device) {
         if (!m_importedDeviceHandle) {
+            DeviceWaitIdle();
             DestroyDevice(m_device, nullptr);
         }
         m_device = VkDevice();
@@ -1182,9 +1182,13 @@ VulkanDeviceContext::~VulkanDeviceContext() {
     m_importedDeviceHandle = false;
 
 #if !defined(VK_USE_PLATFORM_WIN32_KHR)
-    dlclose(m_libHandle);
+    if (m_libHandle) {
+        dlclose(m_libHandle);
+    }
 #else // defined(VK_USE_PLATFORM_WIN32_KHR)
-    FreeLibrary(m_libHandle);
+    if (m_libHandle) {
+        FreeLibrary(m_libHandle);
+    }
 #endif // defined(VK_USE_PLATFORM_WIN32_KHR)
 }
 
@@ -1265,6 +1269,7 @@ VkResult VulkanDeviceContext::InitVulkanDecoderDevice(const char * pAppName,
                                                       bool enableValidation,
                                                       bool enableVerboseValidation,
                                                       bool enbaleVerboseDump,
+                                                      bool enableInlineSessionParameters,
                                                       const char * pCustomLoader)
 {
     static const char* const requiredInstanceLayers[] = {
@@ -1325,6 +1330,10 @@ VkResult VulkanDeviceContext::InitVulkanDecoderDevice(const char * pAppName,
     // Add the Vulkan video required device extensions
     AddReqDeviceExtensions(requiredDeviceExtension);
     AddOptDeviceExtensions(optinalDeviceExtension);
+
+    if (enableInlineSessionParameters) {
+        AddReqDeviceExtension("VK_KHR_video_maintenance2");
+    }
 
 #ifdef VIDEO_DISPLAY_QUEUE_SUPPORT
     /********** Start WSI instance extensions support *******************************************/

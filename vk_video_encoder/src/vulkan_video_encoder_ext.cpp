@@ -34,8 +34,7 @@
 class VulkanVideoEncoderExtImpl : public VulkanVideoEncoderExt {
 public:
     VulkanVideoEncoderExtImpl()
-        : m_refCount(0)
-        , m_vkDevCtx()
+        : m_vkDevCtx()
         , m_encoderConfig()
         , m_encoder()
         , m_initialized(false)
@@ -46,18 +45,7 @@ public:
         Deinitialize();
     }
 
-    //=========================================================================
-    // VkVideoRefCountBase
-    //=========================================================================
-    int32_t AddRef() override { return ++m_refCount; }
-
-    int32_t Release() override {
-        uint32_t ret = --m_refCount;
-        if (ret == 0) {
-            delete this;
-        }
-        return ret;
-    }
+    
 
     //=========================================================================
     // VulkanVideoEncoder (base interface - file-based, backward compatible)
@@ -104,7 +92,6 @@ private:
     VkResult InitVulkanDevice(VkVideoCodecOperationFlagBitsKHR codecOp,
                               const VkVideoEncoderConfig& config);
 
-    std::atomic<int32_t>             m_refCount;
     VulkanDeviceContext              m_vkDevCtx;
     VkSharedBaseObj<EncoderConfig>   m_encoderConfig;
     VkSharedBaseObj<VkVideoEncoder>  m_encoder;
@@ -176,36 +163,83 @@ VkResult VulkanVideoEncoderExtImpl::BuildEncoderConfig(
     argStrings.push_back("--encodeHeight");
     argStrings.push_back(std::to_string(extConfig.encodeHeight));
 
+    // Bit depth: derive from input format. Without this, the encoder defaults
+    // to 8-bit profile (H.264 High / H.265 Main) even when P010 input is used,
+    // producing scrambled output from the bit-depth mismatch.
+    uint32_t bpp = 8;
+    switch (extConfig.inputFormat) {
+        case VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16:      // P010
+            bpp = 10; break;
+        case VK_FORMAT_G12X4_B12X4R12X4_2PLANE_420_UNORM_3PACK16:      // P012
+            bpp = 12; break;
+        default: break;
+    }
+    if (bpp > 8) {
+        argStrings.push_back("--inputBpp");
+        argStrings.push_back(std::to_string(bpp));
+    }
+
     // Frame rate: no CLI arg for this in ParseArguments — set via member directly after config
 
-    // Bitrate (note: lowercase 'r' — --averageBitrate, not --averageBitRate)
-    if (extConfig.averageBitrate > 0) {
-        argStrings.push_back("--averageBitrate");
-        argStrings.push_back(std::to_string(extConfig.averageBitrate));
+    // Tuning mode (VkVideoEncodeTuningModeKHR). LOSSLESS engages transquant
+    // bypass + QP0 in the codec config.
+    const bool lossless = (extConfig.tuningMode == 4 /* LOSSLESS */);
+    switch (extConfig.tuningMode) {
+        case 1: argStrings.push_back("--tuningMode"); argStrings.push_back("highquality"); break;
+        case 2: argStrings.push_back("--tuningMode"); argStrings.push_back("lowlatency"); break;
+        case 3: argStrings.push_back("--tuningMode"); argStrings.push_back("ultralowlatency"); break;
+        case 4: argStrings.push_back("--tuningMode"); argStrings.push_back("lossless"); break;
+        default: break;
     }
-    if (extConfig.maxBitrate > 0) {
-        argStrings.push_back("--maxBitrate");
-        argStrings.push_back(std::to_string(extConfig.maxBitrate));
+
+    // Rate control. Constant-QP (a.k.a. DISABLED) when explicitly requested or
+    // when lossless. Otherwise forward the selected bitrate mode. Previously the
+    // ext path forwarded ONLY --averageBitrate with no mode, so constant-QP and
+    // lossless could never be requested and QP0 was dropped.
+    const bool constantQp = (extConfig.rateControlMode == 1 /* DISABLED */) || lossless;
+    if (constantQp) {
+        argStrings.push_back("--rateControlMode");
+        argStrings.push_back("disabled");
+        // Forward QP including 0 (lossless). For lossless, default unset QP to 0.
+        int32_t qpI = (extConfig.constQpI >= 0) ? extConfig.constQpI : (lossless ? 0 : 26);
+        int32_t qpP = (extConfig.constQpP >= 0) ? extConfig.constQpP : qpI;
+        int32_t qpB = (extConfig.constQpB >= 0) ? extConfig.constQpB : qpP;
+        argStrings.push_back("--qpI"); argStrings.push_back(std::to_string(qpI));
+        argStrings.push_back("--qpP"); argStrings.push_back(std::to_string(qpP));
+        argStrings.push_back("--qpB"); argStrings.push_back(std::to_string(qpB));
+    } else {
+        // Explicit RC mode selector so behavior is deterministic (2=CBR, 3=VBR).
+        if (extConfig.rateControlMode == 2)      { argStrings.push_back("--rateControlMode"); argStrings.push_back("cbr"); }
+        else if (extConfig.rateControlMode == 3) { argStrings.push_back("--rateControlMode"); argStrings.push_back("vbr"); }
+        if (extConfig.averageBitrate > 0) {
+            argStrings.push_back("--averageBitrate");
+            argStrings.push_back(std::to_string(extConfig.averageBitrate));
+        }
+        if (extConfig.maxBitrate > 0) {
+            argStrings.push_back("--maxBitrate");
+            argStrings.push_back(std::to_string(extConfig.maxBitrate));
+        }
     }
+    if (extConfig.minQp > 0) { argStrings.push_back("--minQp"); argStrings.push_back(std::to_string(extConfig.minQp)); }
+    if (extConfig.maxQp > 0) { argStrings.push_back("--maxQp"); argStrings.push_back(std::to_string(extConfig.maxQp)); }
 
     // GOP
     if (extConfig.gopLength > 0) {
         argStrings.push_back("--gopFrameCount");
         argStrings.push_back(std::to_string(extConfig.gopLength));
     }
+    // Consecutive-B count: pass through when the caller sets it; otherwise
+    // EncoderConfig adopts the codec's driver-preferred value from the
+    // quality-level caps (5 for AV1 when supported). B-frame GOPs reorder the
+    // encode submissions relative to the input order; the producer's
+    // input-release timeline stays correct because VkVideoEncoder signals
+    // the release at queue flush points (end of each ordered batch) with
+    // the max submitted release value — see SubmitVideoCodingCmds. Note the
+    // producer's frame pool must be deeper than one mini-GOP (B count + 1),
+    // since a mini-GOP's inputs are held until its batch flushes.
     if (extConfig.consecutiveBFrames > 0) {
         argStrings.push_back("--consecutiveBFrameCount");
         argStrings.push_back(std::to_string(extConfig.consecutiveBFrames));
-    }
-
-    // QP — only pass when explicitly set (> 0); 0 is default/unused
-    if (extConfig.constQpI > 0) {
-        argStrings.push_back("--qpI");
-        argStrings.push_back(std::to_string(extConfig.constQpI));
-    }
-    if (extConfig.constQpP > 0) {
-        argStrings.push_back("--qpP");
-        argStrings.push_back(std::to_string(extConfig.constQpP));
     }
 
     // Quality
@@ -245,8 +279,15 @@ VkResult VulkanVideoEncoderExtImpl::BuildEncoderConfig(
         std::cout << "  [" << i << "] " << argv[i] << "\n";
     }
 
-    return EncoderConfig::CreateCodecConfig(
+    VkResult ccResult = EncoderConfig::CreateCodecConfig(
         static_cast<int>(argv.size()), argv.data(), outConfig);
+    // DEBUG: enable the encoder's built-in input-vs-reconstructed PSNR so we can
+    // tell whether the ext encode itself is lossy (input vs recon) independent of
+    // the decode/reference roundtrip.
+    if (ccResult == VK_SUCCESS && outConfig && getenv("VKENC_DEBUG_PSNR")) {
+        outConfig->enablePsnrMetrics = 1;
+    }
+    return ccResult;
 }
 
 //=============================================================================
@@ -272,6 +313,11 @@ VkResult VulkanVideoEncoderExtImpl::InitVulkanDevice(
         VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME,
         VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
         VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+#elif defined(_WIN32)
+        VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
 #endif
         VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
         VK_KHR_VIDEO_QUEUE_EXTENSION_NAME,
@@ -286,6 +332,11 @@ VkResult VulkanVideoEncoderExtImpl::InitVulkanDevice(
         VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
         VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
         VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME,
+        VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME,
+        VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME,
+        VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME,
+        VK_KHR_VIDEO_ENCODE_QUANTIZATION_MAP_EXTENSION_NAME,
+        VK_KHR_VIDEO_ENCODE_INTRA_REFRESH_EXTENSION_NAME,
         nullptr
     };
 
@@ -298,7 +349,7 @@ VkResult VulkanVideoEncoderExtImpl::InitVulkanDevice(
     m_vkDevCtx.AddOptDeviceExtensions(optionalDeviceExtension);
 
     VkResult result = m_vkDevCtx.InitVulkanDevice("VulkanVideoEncoderExt",
-                                                    VK_NULL_HANDLE,
+                                                    config.externalInstance,
                                                     config.verbose);
     if (result != VK_SUCCESS) {
         std::cerr << "[EncoderExt] InitVulkanDevice failed: " << result << std::endl;
@@ -479,7 +530,7 @@ VkResult VulkanVideoEncoderExtImpl::SubmitExternalFrame(
         frame.currentLayout,  // Producer's layout (e.g. GENERAL for compute output)
         frame.frameId,
         frame.pts,
-        false,  // isLastFrame (caller controls this externally)
+        (frame.isLastFrame == VK_TRUE),
         frame.waitSemaphoreCount,
         frame.pWaitSemaphores,
         frame.pWaitSemaphoreValues,
@@ -502,10 +553,8 @@ VkResult VulkanVideoEncoderExtImpl::SubmitExternalFrame(
             if (encodeFrameInfo->inputCmdBuffer) {
                 // Paths B/C: staging copy was done, signal from inputCmdBuffer
                 *pStagingCompleteSemaphore = encodeFrameInfo->inputCmdBuffer->GetSemaphore();
-            } else if (encodeFrameInfo->encodeCmdBuffer) {
-                // Path A: direct encode, signal from encodeCmdBuffer
-                *pStagingCompleteSemaphore = encodeFrameInfo->encodeCmdBuffer->GetSemaphore();
             } else {
+                // Path A: no staging, sync is via inputSignalSemaphores (timeline)
                 *pStagingCompleteSemaphore = VK_NULL_HANDLE;
             }
         }
@@ -609,13 +658,20 @@ VkResult VulkanVideoEncoderExtImpl::Flush()
     m_encoder->WaitForThreadsToComplete();
 
     // Drain the pending queue
-    std::lock_guard<std::mutex> lock(m_pendingMutex);
-    for (auto& pending : m_pendingFrames) {
-        if (pending.encodeFrameInfo && pending.encodeFrameInfo->encodeCmdBuffer) {
-            pending.encodeFrameInfo->encodeCmdBuffer->ResetCommandBuffer(
-                true, "EncoderExtFlush");
+    {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        for (auto& pending : m_pendingFrames) {
+            if (pending.encodeFrameInfo && pending.encodeFrameInfo->encodeCmdBuffer) {
+                pending.encodeFrameInfo->encodeCmdBuffer->ResetCommandBuffer(
+                    true, "EncoderExtFlush");
+            }
         }
     }
+
+    // Release the encoder — the destructor calls DeinitEncoder() which
+    // writes any buffered bitstream (deferred frames from GOP reordering)
+    // and closes the output file.
+    m_encoder = nullptr;
 
     return VK_SUCCESS;
 }
